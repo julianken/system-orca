@@ -22,7 +22,13 @@ server.log
 Thumbs.db
 
 # Local-only working material — not for the public repo.
-# Plans, specs, critic verdicts, and prior-art imports kept on disk
-# for the author's reference but not published.
-/docs/
+# SPEC.md is the durable contract and IS published; PLAN.md and the
+# critic verdicts are internal build-order ephemera kept on disk only.
+/docs/*
+!/docs/SPEC.md
 /prior-art/
+
+# Misc
+coverage/
+*.bak
+.netrc
