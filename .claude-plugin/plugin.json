@@ -1,0 +1,22 @@
+{
+  "name": "system-orca",
+  "version": "0.1.0",
+  "description": "Live dashboard for multi-step or multi-agent Claude Code workflows. Starts a local node server on first use; every agent (orchestrator + dispatched subagents) publishes events so the user can watch progress in a browser.",
+  "author": {
+    "name": "julianken",
+    "url": "https://github.com/julianken"
+  },
+  "repository": "https://github.com/julianken/system-orca",
+  "license": "MIT",
+  "keywords": [
+    "dashboard",
+    "observability",
+    "multi-agent",
+    "orchestration",
+    "claude-code",
+    "live-progress",
+    "event-bus",
+    "subagent-tracking",
+    "developer-tools"
+  ]
+}

@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Node (the plugin uses zero deps, but local experimentation may pull some in)
+node_modules/
+package-lock.json
+yarn.lock
+
+# Runtime artefacts (server pidfile, logs, workflow state)
+# Real runtime lives at ~/.claude/system-orca/ — not in this repo.
+# This guard catches accidental copies.
+server.pid
+server.log
+*.jsonl
+
+# OS
+Thumbs.db
+
+# Local-only working material — not for the public repo.
+# Plans, specs, critic verdicts, and prior-art imports kept on disk
+# for the author's reference but not published.
+/docs/
+/prior-art/
