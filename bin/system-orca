@@ -28,7 +28,7 @@ function usage() {
     '  up                                start the local dashboard server (idempotent)',
     '  down                              stop the local dashboard server (idempotent)',
     '  status                            print server liveness + workflow counts',
-    '  init    --title T --goal G [--id] create a workflow; prints id then URL',
+    '  init    --title T --goal G [--id] [--mode wave]   create a workflow',
     '  event   --workflow ID --type T [--stage-id S] [--data JSON|@file]',
     '  plan    --workflow ID --file P    POST plan_declared from a JSON file',
     '  list    [--all]                   list workflows (table)',
@@ -522,6 +522,7 @@ async function init(rest) {
         title: { type: 'string' },
         goal:  { type: 'string' },
         id:    { type: 'string' },
+        mode:  { type: 'string' },
       },
       allowPositionals: false,
     });
@@ -529,17 +530,23 @@ async function init(rest) {
     process.stderr.write(`error: ${err.message}\n`);
     return 1;
   }
-  const { title, goal, id: idOverride } = parsed.values;
+  const { title, goal, id: idOverride, mode } = parsed.values;
   if (!title || !goal) {
     process.stderr.write('error: --title and --goal are required\n');
     return 1;
   }
+  if (mode != null && mode !== 'wave') {
+    process.stderr.write(`error: unknown --mode '${mode}' (supported: 'wave' or omitted)\n`);
+    return 1;
+  }
   const id = idOverride || generateWorkflowId();
+  const data = { title, goal };
+  if (mode === 'wave') data.mode = 'wave';
   const r = await postJson('/api/events', {
     workflow_id: id,
     type: 'workflow_init',
     agent: process.env.SYSTEM_ORCA_AGENT || 'orchestrator',
-    data: { title, goal },
+    data,
   }, 5000);
   if (!r || r.status !== 200) {
     process.stderr.write(`error: workflow_init failed — ${describePostFailure(r)}\n`);
