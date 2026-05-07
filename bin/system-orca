@@ -1,0 +1,264 @@
+#!/usr/bin/env node
+'use strict';
+
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const http = require('node:http');
+const { spawn } = require('node:child_process');
+const { parseArgs } = require('node:util');
+
+const NAME = 'system-orca';
+const PORT = Number(process.env.SYSTEM_ORCA_PORT) || 8765;
+const HOST = '127.0.0.1';
+const HOME = process.env.SYSTEM_ORCA_HOME || path.join(os.homedir(), '.claude', 'system-orca');
+const PID_FILE = path.join(HOME, 'server.pid');
+const LOG_FILE = path.join(HOME, 'server.log');
+const SERVER_PATH = path.join(__dirname, '..', 'server', 'server.js');
+const URL_BASE = `http://${HOST}:${PORT}`;
+
+const SUBCOMMANDS = ['up', 'down', 'status', 'init', 'event', 'archive', 'list', 'tail'];
+
+function usage() {
+  return [
+    `usage: ${NAME} <subcommand> [args]`,
+    '',
+    'phase-1 subcommands:',
+    '  up      start the local dashboard server (idempotent)',
+    '  down    stop the local dashboard server (idempotent)',
+    '  status  print server liveness + workflow counts',
+    '',
+    'phase-2+ subcommands (not yet implemented):',
+    '  init, event, archive, list, tail',
+    '',
+    `runtime root: ${HOME}`,
+    `server URL:   ${URL_BASE}`,
+    '',
+  ].join('\n');
+}
+
+function readPid() {
+  try {
+    const raw = fs.readFileSync(PID_FILE, 'utf8').trim();
+    const pid = Number(raw);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function isAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if (err.code === 'EPERM') return true;
+    return false;
+  }
+}
+
+function unlinkPidFile() {
+  try { fs.unlinkSync(PID_FILE); } catch { /* already gone */ }
+}
+
+function getJson(pathname, timeoutMs) {
+  return new Promise((resolve) => {
+    const req = http.request({ host: HOST, port: PORT, path: pathname, method: 'GET' }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
+        let json = null;
+        try { json = JSON.parse(body); } catch { /* leave null */ }
+        resolve({ status: res.statusCode, body, json });
+      });
+    });
+    req.on('error', () => resolve(null));
+    if (timeoutMs) req.setTimeout(timeoutMs, () => req.destroy());
+    req.end();
+  });
+}
+
+async function probeIdentity() {
+  const r = await getJson('/api/version', 1000);
+  if (r && r.status === 200 && r.json && r.json.name === NAME) return { ours: true, response: r };
+  return { ours: false, response: r };
+}
+
+function spawnDetached() {
+  fs.mkdirSync(HOME, { recursive: true });
+  const logFd = fs.openSync(LOG_FILE, 'a');
+  const child = spawn(process.execPath, [SERVER_PATH], {
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
+    env: process.env,
+  });
+  child.unref();
+  return child.pid;
+}
+
+async function pollUntilOurs(deadlineMs) {
+  while (Date.now() < deadlineMs) {
+    const probe = await probeIdentity();
+    if (probe.ours) return true;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return false;
+}
+
+function tailLog(maxBytes) {
+  try {
+    const stat = fs.statSync(LOG_FILE);
+    const start = Math.max(0, stat.size - maxBytes);
+    const fd = fs.openSync(LOG_FILE, 'r');
+    const len = stat.size - start;
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, start);
+    fs.closeSync(fd);
+    return buf.toString('utf8');
+  } catch {
+    return '(no log)';
+  }
+}
+
+async function up() {
+  const existingPid = readPid();
+  if (existingPid && isAlive(existingPid)) {
+    const probe = await probeIdentity();
+    if (probe.ours) {
+      process.stdout.write(`server already up at ${URL_BASE}\n`);
+      return 0;
+    }
+    const r = probe.response;
+    const detail = r
+      ? `GET /api/version returned ${r.status}: ${(r.body || '').slice(0, 200)}`
+      : 'GET /api/version produced no response';
+    process.stderr.write(
+      `error: port ${PORT} is held by PID ${existingPid}, but it doesn't appear to be ${NAME} (${detail}).\n` +
+      `Free the port (kill ${existingPid}) or set SYSTEM_ORCA_PORT to a different value, then retry.\n`
+    );
+    return 1;
+  }
+  if (existingPid) unlinkPidFile();
+
+  spawnDetached();
+  const ok = await pollUntilOurs(Date.now() + 5000);
+  if (!ok) {
+    process.stderr.write(`error: server failed to come up within 5s. Tail of ${LOG_FILE}:\n${tailLog(2048)}\n`);
+    return 1;
+  }
+  process.stdout.write(`server up at ${URL_BASE}\n`);
+  return 0;
+}
+
+async function down() {
+  const pid = readPid();
+  if (!pid) {
+    process.stdout.write('server is down\n');
+    unlinkPidFile();
+    return 0;
+  }
+  if (!isAlive(pid)) {
+    unlinkPidFile();
+    process.stdout.write('server is down (stale pidfile cleaned)\n');
+    return 0;
+  }
+  try { process.kill(pid, 'SIGTERM'); } catch { /* race: died between checks */ }
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    if (!isAlive(pid)) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  unlinkPidFile();
+  process.stdout.write('server down\n');
+  return 0;
+}
+
+async function gatherStatus() {
+  const pid = readPid();
+  const alive = pid && isAlive(pid);
+  if (!alive) return { up: false, pid: null, url: URL_BASE };
+  const probe = await probeIdentity();
+  if (!probe.ours) return { up: false, pid, url: URL_BASE, foreign: true };
+  const wf = await getJson('/api/workflows', 1000);
+  const counts = (wf && wf.json && wf.json.counts) || { running: 0, completed: 0, archived: 0 };
+  return { up: true, pid, url: URL_BASE, counts };
+}
+
+// Renders the `status` subcommand output. The exit code is the boolean
+// "is the server up", which the caller maps to 0/1.
+//
+// TODO(@you, learning-mode): pick a format. Options to consider:
+//   1) plain key/value lines (terse, scriptable)
+//   2) aligned table (nice when scanning multiple workflows later)
+//   3) JSON when --json is passed, otherwise (1)
+// state is the object returned by gatherStatus():
+//   { up:true,  pid, url, counts:{running, completed, archived} }
+//   { up:false, pid:null, url }
+//   { up:false, pid, url, foreign:true }   // port held by something else
+// 5–10 lines that write to process.stdout. No return value needed.
+function formatStatus(state) {
+  if (state.foreign) {
+    process.stdout.write(`down (port ${PORT} held by foreign PID ${state.pid})\n`);
+    process.stdout.write(`url:  ${state.url}\n`);
+    return;
+  }
+  if (!state.up) {
+    process.stdout.write('down\n');
+    process.stdout.write(`url:  ${state.url}\n`);
+    return;
+  }
+  const c = state.counts;
+  process.stdout.write('up\n');
+  process.stdout.write(`url:  ${state.url}\n`);
+  process.stdout.write(`pid:  ${state.pid}\n`);
+  process.stdout.write(`running:   ${c.running}\n`);
+  process.stdout.write(`completed: ${c.completed}\n`);
+  process.stdout.write(`archived:  ${c.archived}\n`);
+}
+
+async function status() {
+  const state = await gatherStatus();
+  formatStatus(state);
+  return state.up ? 0 : 0;
+}
+
+function notImplemented(name) {
+  process.stderr.write(`${NAME} ${name}: not yet implemented (lands in a later phase)\n`);
+  return 2;
+}
+
+async function main() {
+  const argv = process.argv.slice(2);
+  if (argv.length === 0 || argv[0] === '-h' || argv[0] === '--help') {
+    process.stdout.write(usage());
+    return 0;
+  }
+
+  const sub = argv[0];
+  const rest = argv.slice(1);
+
+  try {
+    parseArgs({ args: rest, options: {}, allowPositionals: true, tokens: true });
+  } catch (err) {
+    process.stderr.write(`error: ${err.message}\n`);
+    return 1;
+  }
+
+  if (!SUBCOMMANDS.includes(sub)) {
+    process.stderr.write(`error: unknown subcommand '${sub}'\n\n${usage()}`);
+    return 1;
+  }
+
+  switch (sub) {
+    case 'up':     return up();
+    case 'down':   return down();
+    case 'status': return status();
+    default:       return notImplemented(sub);
+  }
+}
+
+main().then((code) => process.exit(code)).catch((err) => {
+  process.stderr.write(`fatal: ${err && err.stack || err}\n`);
+  process.exit(1);
+});
