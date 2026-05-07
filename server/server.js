@@ -7,6 +7,7 @@ const path = require('node:path');
 const os = require('node:os');
 
 const { project, readEventsFromFile } = require('./state');
+const { stateToMermaid } = require('./mermaid');
 
 const VERSION = '0.1.0';
 const NAME = 'system-orca';
@@ -257,6 +258,23 @@ async function handleGetWorkflow(req, res, id) {
   return jsonResponse(res, 200, { meta, stages: projected.stages, feed: projected.feed });
 }
 
+async function handleGetDiagram(req, res, id, url) {
+  if (!WORKFLOW_ID_RE.test(id)) return notFound(res);
+  if (!(await workflowExists(id))) return notFound(res);
+  let events;
+  try { events = readEventsFromFile(eventsPath(id)); }
+  catch (e) { return jsonError(res, 500, 'corrupt_events', e.message); }
+  const projected = project(events);
+  const includeStatus = url.searchParams.get('include_status') !== 'false';
+  const text = stateToMermaid({ stages: projected.stages }, { include_status: includeStatus });
+  const buf = Buffer.from(text, 'utf8');
+  res.writeHead(200, {
+    'Content-Type': 'text/plain; charset=utf-8',
+    'Content-Length': buf.length,
+  });
+  res.end(buf);
+}
+
 async function handleGetEventsFile(req, res, id) {
   if (!WORKFLOW_ID_RE.test(id)) return notFound(res);
   const file = eventsPath(id);
@@ -358,6 +376,7 @@ function handle(req, res) {
     const id = wfMatch[1];
     const sub = wfMatch[2] || '';
     if (req.method === 'GET' && sub === '') return handleGetWorkflow(req, res, id);
+    if (req.method === 'GET' && sub === '/diagram.mmd') return handleGetDiagram(req, res, id, url);
     if (req.method === 'GET' && sub === '/events.jsonl') return handleGetEventsFile(req, res, id);
     if (req.method === 'POST' && sub === '/archive') return handleArchive(req, res, id);
   }
