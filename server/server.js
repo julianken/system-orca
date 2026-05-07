@@ -9,7 +9,7 @@ const os = require('node:os');
 const { project, readEventsFromFile } = require('./state');
 const { stateToMermaid } = require('./mermaid');
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 const NAME = 'system-orca';
 
 const PORT = Number(process.env.SYSTEM_ORCA_PORT) || 8765;
@@ -132,6 +132,11 @@ function validateEvent(body) {
   if (body.data != null && (typeof body.data !== 'object' || Array.isArray(body.data))) {
     return 'data must be an object when present';
   }
+  if (body.type === 'workflow_init' && body.data && body.data.mode != null) {
+    if (body.data.mode !== 'wave') {
+      return `unknown mode '${body.data.mode}' — supported: "wave" or omitted`;
+    }
+  }
   return null;
 }
 
@@ -191,6 +196,7 @@ async function applyWorkflowInit(id, event) {
     archived: false,
     artifact_root: data.artifact_root || null,
   };
+  if (data.mode === 'wave') meta.mode = 'wave';
   await writeMeta(id, meta);
 }
 
@@ -250,12 +256,13 @@ async function handleEventsPost(req, res) {
 async function handleGetWorkflow(req, res, id) {
   if (!WORKFLOW_ID_RE.test(id)) return notFound(res);
   if (!(await workflowExists(id))) return notFound(res);
-  let meta = (await readMeta(id)) || {};
+  const persistedMeta = (await readMeta(id)) || {};
   let events;
   try { events = readEventsFromFile(eventsPath(id)); }
   catch (e) { return jsonError(res, 500, 'corrupt_events', e.message); }
   const projected = project(events);
-  return jsonResponse(res, 200, { meta, stages: projected.stages, feed: projected.feed });
+  const response = { ...projected, meta: { ...projected.meta, ...persistedMeta } };
+  return jsonResponse(res, 200, response);
 }
 
 async function handleGetDiagram(req, res, id, url) {
