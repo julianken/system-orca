@@ -49,12 +49,16 @@ function cardHTML(s) {
   const goal = escapeHtml(s.goal || '');
   const status = escapeHtml(s.status || 'pending');
   const archived = s.archived ? 'true' : 'false';
+  const mode = s.mode === 'wave' ? 'wave' : 'base';
   const last = escapeHtml(relativeTime(s.last_event_at || s.started_at));
-  const progress = `${s.completed_count || 0}/${s.stage_count || 0} stages`;
+  const progress = mode === 'wave'
+    ? `wave · ${s.wave_count || 0}w/${s.issue_count || 0}i`
+    : `${s.completed_count || 0}/${s.stage_count || 0} stages`;
   return `<article class="card" role="listitem" tabindex="0"
     data-workflow-id="${id}"
     data-status="${status}"
-    data-archived="${archived}">
+    data-archived="${archived}"
+    data-mode="${mode}">
     <div class="card-head">
       <span class="card-title">${title}</span>
       <span class="pill ${pillClass(s)}">${escapeHtml(pillText(s))}</span>
@@ -315,16 +319,284 @@ function bootDetail() {
   setInterval(() => { if (currentTab() === 'diagram') renderDiagram(); }, POLL_MS);
 }
 
+// ---- wave detail (workflow-wave.html) ----
+
+function workflowIdFromWavePath() {
+  const m = location.pathname.match(/^\/w\/([^/]+)\/?$/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
+function issueIdFromPath() {
+  const m = location.pathname.match(/^\/w\/([^/]+)\/issue\/([^/]+)\/?$/);
+  return m ? { workflow: decodeURIComponent(m[1]), issue: decodeURIComponent(m[2]) } : null;
+}
+
+const STEP_ICON = {
+  pending: '○', running: '⟳', done: '✓', failed: '✗', 'n/a': '·',
+};
+
+function renderSteps(stepsObj) {
+  if (!stepsObj) return '';
+  const order = ['0_claim','1_reconcile','2_worktree','3_implement','4_gate',
+    '5_bot_review','6_verdict','7_mergify','8_verify_merge','9_cleanup'];
+  return `<div class="step-strip">${order.map((k) => {
+    const s = escapeHtml(stepsObj[k] || 'pending');
+    const icon = STEP_ICON[stepsObj[k]] || '·';
+    return `<span class="step-cell" data-step="${escapeHtml(k)}" data-status="${s}" title="${escapeHtml(k)}: ${s}">${icon}</span>`;
+  }).join('')}</div>`;
+}
+
+function renderIssueCard(issue) {
+  const id = escapeHtml(issue.issue_id || '');
+  const wf = workflowIdFromWavePath();
+  const title = escapeHtml(issue.title || issue.issue_id);
+  const status = escapeHtml((issue.steps && Object.values(issue.steps).every((v) => v === 'done' || v === 'n/a')) ? 'done' : 'in-progress');
+  const cycles = issue.review_cycles ? `<span class="issue-cycles">${issue.review_cycles} review cycles</span>` : '';
+  const needs = issue.needs_human ? 'true' : 'false';
+  return `<div class="issue" data-issue-id="${id}" data-status="${status}" data-needs-human="${needs}">
+    <div class="issue-head">
+      <span class="issue-id">${id}</span>
+      <a class="issue-title" href="/w/${escapeHtml(wf)}/issue/${id}">${title}</a>
+      ${cycles}
+    </div>
+    ${renderSteps(issue.steps)}
+  </div>`;
+}
+
+function renderWaves(state) {
+  const waves = state.waves || [];
+  const bandsById = new Map((state.bands || []).map((b) => [b.band_id, b]));
+  const issuesByBand = new Map();
+  for (const issue of state.issues || []) {
+    const k = issue.band_id;
+    if (!issuesByBand.has(k)) issuesByBand.set(k, []);
+    issuesByBand.get(k).push(issue);
+  }
+  const html = waves.map((w) => {
+    const bandIds = Array.isArray(w.bands) ? w.bands : [];
+    const bands = bandIds.map((bid) => {
+      const band = bandsById.get(bid) || { band_id: bid, concurrency: 1 };
+      const issues = (issuesByBand.get(bid) || []).map(renderIssueCard).join('');
+      const tag = Number(band.concurrency) === 0 ? 'tracker'
+                : Number(band.concurrency) === 1 ? 'sequential'
+                : `${band.concurrency}× parallel`;
+      const tagClass = Number(band.concurrency) === 0 ? 'tracker' : '';
+      return `<div class="band" data-band-id="${escapeHtml(bid)}">
+        <div class="band-head">
+          <span>band ${escapeHtml(bid)}</span>
+          <span class="conc-tag ${tagClass}">${escapeHtml(tag)}</span>
+        </div>
+        ${issues}
+      </div>`;
+    }).join('');
+    return `<article class="wave" data-wave-id="${escapeHtml(w.wave_id)}">
+      <div class="wave-head">
+        <span class="wave-id">${escapeHtml(w.wave_id)}</span>
+        <span class="wave-name">${escapeHtml(w.name || w.wave_id)}</span>
+      </div>
+      ${bands}
+    </article>`;
+  }).join('');
+  document.getElementById('waves').innerHTML = html;
+}
+
+function renderCriticalPath(cp) {
+  const banner = document.getElementById('critical');
+  const text = document.getElementById('critical-text');
+  if (!cp) { banner.hidden = true; return; }
+  banner.hidden = false;
+  let s = cp.next_dispatch || '';
+  if (cp.blocking_pr) s += ` (PR #${cp.blocking_pr})`;
+  if (cp.eta) s += ` · eta ${cp.eta}`;
+  text.textContent = s;
+}
+
+function renderEscalations(escalations) {
+  const banner = document.getElementById('escalations');
+  const list = document.getElementById('escalations-list');
+  if (!escalations || !escalations.length) { banner.hidden = true; return; }
+  banner.hidden = false;
+  list.innerHTML = escalations.map((e) => `<div>
+    <strong>${escapeHtml(e.issue_id)}</strong> — ${escapeHtml(e.reason || '')}
+    <span style="color: var(--text-2); font-size: 11px;">[${escapeHtml(e.source || '')}]</span>
+  </div>`).join('');
+}
+
+function renderWaveSummary(s) {
+  const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = String(v); };
+  setText('sum-total', s.summary?.total ?? 0);
+  setText('sum-done', s.summary?.done ?? 0);
+  setText('sum-in_progress', s.summary?.in_progress ?? 0);
+  setText('sum-blocked', s.summary?.blocked ?? 0);
+  setText('sum-needs_human', s.summary?.needs_human ?? 0);
+  setText('sum-waves', (s.waves || []).length);
+}
+
+function renderWaveHeader(state) {
+  const meta = state.meta || {};
+  const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  setText('wf-title', meta.title || meta.id || workflowIdFromWavePath() || 'workflow');
+  setText('wf-goal', meta.goal || '');
+  setText('wf-started', meta.started_at ? new Date(meta.started_at).toISOString().slice(0, 19) + ' UTC' : '—');
+  const lastEvent = state.feed && state.feed.length ? state.feed[state.feed.length - 1].ts : meta.started_at;
+  setText('wf-last-update', lastEvent ? relativeTime(lastEvent) : '—');
+  const badge = document.getElementById('wf-mode-badge');
+  if (badge) badge.innerHTML = `<span class="pill" style="background: var(--bg-elev-2); padding: 2px 8px; border-radius: 999px; font-size: 11px;">wave · ${(state.waves || []).length}w/${(state.issues || []).length}i</span>`;
+}
+
+function renderWaveFeed(state) {
+  const list = document.getElementById('feed-list');
+  if (!list) return;
+  const feed = (state.feed || []).slice(-50).reverse();
+  list.innerHTML = feed.map((entry) => {
+    const ts = entry.ts ? new Date(entry.ts).toISOString().slice(11, 19) : '';
+    const stage = entry.stage_id ? ` ${escapeHtml(entry.stage_id)}` : '';
+    const text = escapeHtml(entry.text || entry.summary || '');
+    return `<div class="feed-entry" data-event-type="${escapeHtml(entry.type || '')}">
+      <span class="ts">${ts}</span>
+      <span class="agent">${escapeHtml(entry.agent || '')}</span>
+      <span class="type">${escapeHtml(entry.type || '')}</span>
+      <span>${stage} ${text}</span>
+    </div>`;
+  }).join('');
+}
+
+async function renderWaveDetail() {
+  const wf = workflowIdFromWavePath();
+  if (!wf) return;
+  const r = await fetch(`/api/workflows/${encodeURIComponent(wf)}/wave-state`, { cache: 'no-store' });
+  if (!r.ok) return;
+  const state = await r.json();
+  const r2 = await fetch(`/api/workflows/${encodeURIComponent(wf)}`, { cache: 'no-store' });
+  const baseState = r2.ok ? await r2.json() : { feed: [] };
+  state.feed = baseState.feed;
+  window.__systemView.lastFetchAt = Date.now();
+  renderWaveHeader(state);
+  renderWaveSummary(state);
+  renderCriticalPath(state.critical_path);
+  renderEscalations(state.escalations);
+  renderWaves(state);
+  renderWaveFeed(state);
+}
+
+function bootWaveDetail() {
+  renderWaveDetail();
+  setInterval(renderWaveDetail, POLL_MS);
+}
+
+// ---- issue detail (issue-detail.html) ----
+
+function renderIssueHeader(state, issueId) {
+  const issue = (state.issues || []).find((i) => i.issue_id === issueId);
+  if (!issue) return;
+  const wf = state.meta?.id || '';
+  const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  setText('issue-title', issue.title || issueId);
+  setText('issue-id', issueId);
+  setText('issue-wave', issue.wave_id || '');
+  setText('issue-band', issue.band_id || '');
+  const back = document.getElementById('back-to-wave');
+  if (back) back.href = `/w/${encodeURIComponent(wf)}`;
+  const ghState = document.getElementById('issue-gh-state');
+  if (ghState) {
+    const s = issue.github && issue.github.issue_state;
+    ghState.dataset.state = s || '';
+    ghState.textContent = s || '—';
+  }
+  if (issue.review_cycles) {
+    document.getElementById('issue-cycles').hidden = false;
+    setText('issue-cycle-count', issue.review_cycles);
+  }
+  if (issue.needs_human) document.getElementById('issue-needs-human').hidden = false;
+  // Quick links
+  const links = document.getElementById('quick-links');
+  if (links) {
+    const parts = [];
+    if (issue.github && issue.github.repo && issue.github.issue_num) {
+      parts.push(`<a href="https://github.com/${escapeHtml(issue.github.repo)}/issues/${escapeHtml(String(issue.github.issue_num))}" target="_blank">GitHub issue #${escapeHtml(String(issue.github.issue_num))}</a>`);
+    }
+    if (issue.github && issue.github.repo && issue.github.pr_num) {
+      parts.push(`<a href="https://github.com/${escapeHtml(issue.github.repo)}/pull/${escapeHtml(String(issue.github.pr_num))}" target="_blank">PR #${escapeHtml(String(issue.github.pr_num))}</a>`);
+    }
+    parts.push(`<a href="/api/workflows/${encodeURIComponent(wf)}/issues/${encodeURIComponent(issueId)}/activity.ndjson">raw activity (ndjson)</a>`);
+    links.innerHTML = parts.join('');
+  }
+}
+
+function renderIssueSteps(issue) {
+  const container = document.getElementById('steps');
+  if (!container) return;
+  if (!issue || !issue.steps) { container.innerHTML = ''; return; }
+  const order = ['0_claim','1_reconcile','2_worktree','3_implement','4_gate',
+    '5_bot_review','6_verdict','7_mergify','8_verify_merge','9_cleanup'];
+  container.innerHTML = order.map((k) => {
+    const s = escapeHtml(issue.steps[k] || 'pending');
+    return `<div class="step-row" data-step="${escapeHtml(k)}" data-status="${s}">
+      <div class="step-key">${escapeHtml(k)}</div>
+      <div>${escapeHtml(k.split('_').slice(1).join(' '))}</div>
+      <div class="step-status">${s}</div>
+    </div>`;
+  }).join('');
+}
+
+async function renderIssueActivity(wf, issueId) {
+  const r = await fetch(`/api/workflows/${encodeURIComponent(wf)}/issues/${encodeURIComponent(issueId)}/activity.ndjson`, { cache: 'no-store' });
+  if (!r.ok) return;
+  const text = await r.text();
+  const events = text.split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  const container = document.getElementById('activity');
+  if (!container) return;
+  container.innerHTML = events.map((e) => {
+    const ts = e.ts ? new Date(e.ts).toISOString().slice(11, 19) : '';
+    const text = escapeHtml((e.data && (e.data.summary || e.data.text)) || '');
+    return `<div class="activity-entry" data-event-type="${escapeHtml(e.type || '')}">
+      <span class="ts">${ts}</span>
+      <span class="agent">${escapeHtml(e.agent || '')}</span>
+      <span class="type">${escapeHtml(e.type || '')}</span>
+      <span>${text}</span>
+    </div>`;
+  }).join('');
+}
+
+async function renderIssueDetail() {
+  const ids = issueIdFromPath();
+  if (!ids) return;
+  const r = await fetch(`/api/workflows/${encodeURIComponent(ids.workflow)}/wave-state`, { cache: 'no-store' });
+  if (!r.ok) return;
+  const state = await r.json();
+  window.__systemView.lastFetchAt = Date.now();
+  renderIssueHeader(state, ids.issue);
+  const issue = (state.issues || []).find((i) => i.issue_id === ids.issue);
+  renderIssueSteps(issue);
+  await renderIssueActivity(ids.workflow, ids.issue);
+}
+
+function bootIssueDetail() {
+  renderIssueDetail();
+  setInterval(renderIssueDetail, POLL_MS);
+}
+
+// ---- dispatch ----
+
 if (location.pathname === '/' || location.pathname === '/index.html') {
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', bootIndex);
   } else {
     bootIndex();
   }
-} else if (location.pathname.startsWith('/w/')) {
+} else if (issueIdFromPath()) {
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', bootDetail);
+    document.addEventListener('DOMContentLoaded', bootIssueDetail);
   } else {
-    bootDetail();
+    bootIssueDetail();
+  }
+} else if (location.pathname.startsWith('/w/')) {
+  // Decide which detail view based on document content
+  const isWave = !!document.getElementById('waves');
+  const boot = isWave ? bootWaveDetail : bootDetail;
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
   }
 }

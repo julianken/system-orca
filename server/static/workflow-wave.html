@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>system-orca — wave</title>
+  <style>
+    :root {
+      --bg: #09090b; --bg-elev: #18181b; --bg-elev-2: #27272a;
+      --border: #3f3f46; --text: #fafafa; --text-2: #a1a1aa;
+      --accent: #84cc16; --ok: #22c55e; --err: #ef4444;
+      --warn: #f59e0b; --critic: #0ea5e9;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      background: var(--bg); color: var(--text); margin: 0; min-height: 100vh;
+      font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+    }
+    a { color: inherit; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    header.wf-head { padding: 24px 32px; border-bottom: 1px solid var(--border); }
+    .breadcrumb { font-size: 12px; color: var(--text-2); margin-bottom: 8px; }
+    h1#wf-title { margin: 0 0 6px 0; font-size: 22px; font-weight: 600; }
+    p#wf-goal { margin: 0 0 12px 0; color: var(--text-2); font-size: 14px; }
+    .wf-meta { display: flex; gap: 16px; color: var(--text-2); font-size: 12px; flex-wrap: wrap; }
+
+    main { padding: 24px 32px; }
+
+    .summary-grid {
+      display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px;
+      margin-bottom: 24px;
+    }
+    .summary-card {
+      background: var(--bg-elev); border: 1px solid var(--border);
+      border-radius: 8px; padding: 16px;
+    }
+    .summary-card .label { font-size: 11px; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.05em; }
+    .summary-card .value { font-size: 22px; font-weight: 600; margin-top: 6px; }
+    .summary-card.alert { border-color: var(--err); }
+    .summary-card.alert .value { color: var(--err); }
+
+    .crit-path, .escalations-banner {
+      padding: 16px; border-radius: 8px; margin-bottom: 16px;
+      border: 1px solid var(--accent); background: rgba(132, 204, 22, 0.08);
+    }
+    .escalations-banner { border-color: var(--err); background: rgba(239, 68, 68, 0.08); }
+    .crit-path[hidden], .escalations-banner[hidden] { display: none; }
+    .crit-path .label, .escalations-banner .label {
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-2);
+    }
+    .crit-path .body { margin-top: 6px; font-size: 14px; }
+
+    .wave {
+      background: var(--bg-elev); border: 1px solid var(--border);
+      border-radius: 8px; padding: 16px; margin-bottom: 16px;
+    }
+    .wave-head {
+      display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px;
+    }
+    .wave-head .wave-id { font-family: ui-monospace, monospace; color: var(--text-2); font-size: 12px; }
+    .wave-head .wave-name { font-weight: 600; }
+    .band {
+      background: var(--bg-elev-2); border-radius: 6px; padding: 12px;
+      margin-bottom: 8px;
+    }
+    .band-head {
+      display: flex; gap: 12px; color: var(--text-2); font-size: 12px;
+      margin-bottom: 8px;
+    }
+    .band-head .conc-tag { padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; }
+    .band-head .conc-tag.tracker { color: var(--text-2); }
+
+    .issue {
+      display: grid; grid-template-columns: 1fr auto; gap: 12px;
+      padding: 8px 12px; background: var(--bg); border-radius: 4px;
+      margin-bottom: 4px; font-size: 13px;
+    }
+    .issue[data-needs-human="true"] {
+      border-left: 3px solid var(--err);
+    }
+    .issue-head { display: flex; gap: 12px; align-items: baseline; }
+    .issue-id { font-family: ui-monospace, monospace; color: var(--text-2); font-size: 12px; }
+    .issue-title { color: var(--text); }
+    .issue-cycles { color: var(--warn); font-size: 11px; }
+
+    .step-strip {
+      display: flex; gap: 2px; align-items: center; font-family: ui-monospace, monospace;
+      font-size: 16px;
+    }
+    .step-cell {
+      width: 16px; height: 16px; display: inline-flex;
+      align-items: center; justify-content: center;
+      border-radius: 3px; background: var(--bg-elev-2);
+    }
+    .step-cell[data-status="pending"]  { background: var(--bg-elev-2); color: var(--text-2); }
+    .step-cell[data-status="running"]  { background: var(--accent); color: #000; }
+    .step-cell[data-status="done"]     { background: var(--ok); color: #000; }
+    .step-cell[data-status="failed"]   { background: var(--err); color: #fff; }
+    .step-cell[data-status="n/a"]      { background: transparent; color: var(--text-2); opacity: 0.4; }
+
+    section#feed {
+      margin-top: 32px; border-top: 1px solid var(--border); padding-top: 24px;
+    }
+    section#feed h2 {
+      font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;
+      color: var(--text-2); margin: 0 0 12px 0; font-weight: 500;
+    }
+    .feed-entry {
+      display: flex; gap: 12px; padding: 6px 0; font-size: 12px;
+      border-bottom: 1px solid var(--bg-elev-2); color: var(--text-2);
+    }
+    .feed-entry .ts { font-family: ui-monospace, monospace; flex-shrink: 0; }
+    .feed-entry .agent { color: var(--text); font-weight: 500; }
+    .feed-entry .type { color: var(--accent); font-family: ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <header class="wf-head">
+    <div class="breadcrumb"><a href="/">← back to all workflows</a></div>
+    <h1 id="wf-title">workflow</h1>
+    <p id="wf-goal"></p>
+    <div class="wf-meta">
+      <span>started <span id="wf-started">—</span></span>
+      <span>last update <span id="wf-last-update">—</span></span>
+      <span id="wf-mode-badge"></span>
+    </div>
+  </header>
+  <main>
+    <div class="summary-grid" id="summary-grid">
+      <div class="summary-card"><div class="label">total</div><div class="value" id="sum-total">0</div></div>
+      <div class="summary-card"><div class="label">done</div><div class="value" id="sum-done">0</div></div>
+      <div class="summary-card"><div class="label">in-progress</div><div class="value" id="sum-in_progress">0</div></div>
+      <div class="summary-card"><div class="label">blocked</div><div class="value" id="sum-blocked">0</div></div>
+      <div class="summary-card alert"><div class="label">needs human</div><div class="value" id="sum-needs_human">0</div></div>
+      <div class="summary-card"><div class="label">waves</div><div class="value" id="sum-waves">0</div></div>
+    </div>
+    <div id="critical" class="crit-path" hidden>
+      <div class="label">Critical path</div>
+      <div class="body"><span id="critical-text">—</span></div>
+    </div>
+    <div id="escalations" class="escalations-banner" hidden>
+      <div class="label">Escalations</div>
+      <div class="body" id="escalations-list"></div>
+    </div>
+    <section id="waves"></section>
+    <section id="feed">
+      <h2>Updates feed</h2>
+      <div id="feed-list"></div>
+    </section>
+  </main>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>
