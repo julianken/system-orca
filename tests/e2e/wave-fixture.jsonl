@@ -1,0 +1,57 @@
+{"type":"wave_register","data":{"wave_id":"W0","name":"Cleanup","layout":"horizontal"}}
+{"type":"band_register","data":{"wave_id":"W0","band_id":"W0.A","concurrency":1}}
+{"type":"issue_register","data":{"issue_id":"W0.A.1","wave_id":"W0","band_id":"W0.A","title":"Decommission legacy endpoint","github":{"repo":"x/y","issue_num":300}}}
+{"type":"issue_register","data":{"issue_id":"W0.A.2","wave_id":"W0","band_id":"W0.A","title":"Remove unused config","github":{"repo":"x/y","issue_num":301}}}
+{"type":"wave_register","data":{"wave_id":"W1","name":"Foundation","layout":"horizontal","blocked_by":["W0"]}}
+{"type":"band_register","data":{"wave_id":"W1","band_id":"W1.A","concurrency":1}}
+{"type":"band_register","data":{"wave_id":"W1","band_id":"W1.B","concurrency":4}}
+{"type":"issue_register","data":{"issue_id":"W1.A.1","wave_id":"W1","band_id":"W1.A","title":"Foundation: schema","github":{"repo":"x/y","issue_num":305}}}
+{"type":"issue_register","data":{"issue_id":"W1.B.1","wave_id":"W1","band_id":"W1.B","title":"Spine 1","github":{"repo":"x/y","issue_num":307}}}
+{"type":"issue_register","data":{"issue_id":"W1.B.2","wave_id":"W1","band_id":"W1.B","title":"Spine 2","github":{"repo":"x/y","issue_num":308}}}
+{"type":"issue_register","data":{"issue_id":"W1.B.3","wave_id":"W1","band_id":"W1.B","title":"Spine 3","github":{"repo":"x/y","issue_num":309}}}
+{"type":"issue_register","data":{"issue_id":"W1.B.4","wave_id":"W1","band_id":"W1.B","title":"Spine 4","github":{"repo":"x/y","issue_num":310}}}
+{"type":"wave_register","data":{"wave_id":"W2","name":"Continuation","layout":"horizontal","blocked_by":["W1"]}}
+{"type":"band_register","data":{"wave_id":"W2","band_id":"W2.A","concurrency":2}}
+{"type":"band_register","data":{"wave_id":"W2","band_id":"W2.B","concurrency":3}}
+{"type":"band_register","data":{"wave_id":"W2","band_id":"W2.C","concurrency":3}}
+{"type":"band_register","data":{"wave_id":"W2","band_id":"W2.D","concurrency":1}}
+{"type":"issue_register","data":{"issue_id":"W2.A.1","wave_id":"W2","band_id":"W2.A","title":"Continuation A1","github":{"repo":"x/y","issue_num":315}}}
+{"type":"issue_register","data":{"issue_id":"W2.A.2","wave_id":"W2","band_id":"W2.A","title":"Continuation A2","github":{"repo":"x/y","issue_num":316}}}
+{"type":"issue_register","data":{"issue_id":"W2.B.1","wave_id":"W2","band_id":"W2.B","title":"Satellite 1","github":{"repo":"x/y","issue_num":317}}}
+{"type":"issue_register","data":{"issue_id":"W2.B.2","wave_id":"W2","band_id":"W2.B","title":"Satellite 2","github":{"repo":"x/y","issue_num":318}}}
+{"type":"issue_register","data":{"issue_id":"W2.B.3","wave_id":"W2","band_id":"W2.B","title":"Satellite 3","github":{"repo":"x/y","issue_num":319}}}
+{"type":"issue_register","data":{"issue_id":"W2.C.1","wave_id":"W2","band_id":"W2.C","title":"Essay 1","github":{"repo":"x/y","issue_num":320}}}
+{"type":"issue_register","data":{"issue_id":"W2.C.2","wave_id":"W2","band_id":"W2.C","title":"Essay 2","github":{"repo":"x/y","issue_num":321}}}
+{"type":"issue_register","data":{"issue_id":"W2.C.3","wave_id":"W2","band_id":"W2.C","title":"Essay 3","github":{"repo":"x/y","issue_num":322}}}
+{"type":"issue_register","data":{"issue_id":"W2.D.1","wave_id":"W2","band_id":"W2.D","title":"Continuation D","github":{"repo":"x/y","issue_num":323}}}
+{"type":"wave_register","data":{"wave_id":"W3","name":"Tooling+Honest-absence","layout":"horizontal","blocked_by":["W2"]}}
+{"type":"band_register","data":{"wave_id":"W3","band_id":"W3.A","concurrency":2}}
+{"type":"band_register","data":{"wave_id":"W3","band_id":"W3.B","concurrency":2}}
+{"type":"band_register","data":{"wave_id":"W3","band_id":"W3.C","concurrency":2}}
+{"type":"band_register","data":{"wave_id":"W3","band_id":"W3.D","concurrency":0,"note":"tracker"}}
+{"type":"issue_register","data":{"issue_id":"W3.A.1","wave_id":"W3","band_id":"W3.A","title":"Tooling 1","github":{"repo":"x/y","issue_num":325}}}
+{"type":"issue_register","data":{"issue_id":"W3.A.2","wave_id":"W3","band_id":"W3.A","title":"Tooling 2","github":{"repo":"x/y","issue_num":326}}}
+{"type":"issue_register","data":{"issue_id":"W3.B.1","wave_id":"W3","band_id":"W3.B","title":"Honest-absence 1","github":{"repo":"x/y","issue_num":327}}}
+{"type":"issue_register","data":{"issue_id":"W3.B.2","wave_id":"W3","band_id":"W3.B","title":"Honest-absence 2","github":{"repo":"x/y","issue_num":328}}}
+{"type":"issue_register","data":{"issue_id":"W3.C.1","wave_id":"W3","band_id":"W3.C","title":"Umbrella 1","github":{"repo":"x/y","issue_num":329}}}
+{"type":"issue_register","data":{"issue_id":"W3.C.2","wave_id":"W3","band_id":"W3.C","title":"Umbrella 2","github":{"repo":"x/y","issue_num":331}}}
+{"type":"issue_register","data":{"issue_id":"W3.D.x","wave_id":"W3","band_id":"W3.D","title":"Tracker (post-ops)","github":{"repo":"x/y","issue_num":330},"is_tracker":true}}
+{"type":"step_set","agent":"orchestrator","data":{"issue_id":"W0.A.1","step_key":"0_claim","status":"done"}}
+{"type":"step_set","agent":"impl","data":{"issue_id":"W0.A.1","step_key":"1_reconcile","status":"done"}}
+{"type":"step_set","agent":"impl","data":{"issue_id":"W0.A.1","step_key":"2_worktree","status":"done"}}
+{"type":"step_set","agent":"impl","data":{"issue_id":"W0.A.1","step_key":"3_implement","status":"done"}}
+{"type":"step_set","agent":"impl","data":{"issue_id":"W0.A.1","step_key":"4_gate","status":"done"}}
+{"type":"step_set","agent":"bot","data":{"issue_id":"W0.A.1","step_key":"5_bot_review","status":"done"}}
+{"type":"step_set","agent":"bot","data":{"issue_id":"W0.A.1","step_key":"6_verdict","status":"done"}}
+{"type":"step_set","agent":"orchestrator","data":{"issue_id":"W0.A.1","step_key":"7_mergify","status":"done"}}
+{"type":"step_set","agent":"merged","data":{"issue_id":"W0.A.1","step_key":"8_verify_merge","status":"done"}}
+{"type":"step_set","agent":"orchestrator","data":{"issue_id":"W0.A.1","step_key":"9_cleanup","status":"done"}}
+{"type":"step_set","agent":"orchestrator","data":{"issue_id":"W1.A.1","step_key":"0_claim","status":"done"}}
+{"type":"step_set","agent":"impl","data":{"issue_id":"W1.A.1","step_key":"1_reconcile","status":"done"}}
+{"type":"step_set","agent":"impl","data":{"issue_id":"W1.A.1","step_key":"2_worktree","status":"done"}}
+{"type":"step_set","agent":"impl","data":{"issue_id":"W1.A.1","step_key":"3_implement","status":"running"}}
+{"type":"step_set","agent":"orchestrator","data":{"issue_id":"W1.B.1","step_key":"0_claim","status":"running"}}
+{"type":"review_cycle","agent":"bot","data":{"issue_id":"W1.A.1","cycle_n":1,"verdict":"REQUEST_CHANGES"}}
+{"type":"critical_path_update","agent":"heartbeat","data":{"next_dispatch":"running 3_implement on W1.A.1 — Foundation: schema","blocking_issue":"W1.A.1","blocking_pr":305,"eta":"15m"}}
+{"type":"escalation_add","agent":"heartbeat","data":{"issue_id":"W2.B.3","reason":"needs:human label set","source":"label"}}
+{"type":"github_state_set","agent":"heartbeat","data":{"issue_id":"W1.A.1","issue_state":"OPEN","pr_state":"OPEN","mergeable":true,"mergeStateStatus":"UNSTABLE","review_decision":"REQUEST_CHANGES"}}
