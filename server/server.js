@@ -6,6 +6,8 @@ const fsp = require('node:fs').promises;
 const path = require('node:path');
 const os = require('node:os');
 
+const { project, readEventsFromFile } = require('./state');
+
 const VERSION = '0.1.0';
 const NAME = 'system-orca';
 
@@ -244,6 +246,85 @@ async function handleEventsPost(req, res) {
   return jsonResponse(res, 200, { ts: event.ts, accepted: true });
 }
 
+async function handleGetWorkflow(req, res, id) {
+  if (!WORKFLOW_ID_RE.test(id)) return notFound(res);
+  if (!(await workflowExists(id))) return notFound(res);
+  let meta = (await readMeta(id)) || {};
+  let events;
+  try { events = readEventsFromFile(eventsPath(id)); }
+  catch (e) { return jsonError(res, 500, 'corrupt_events', e.message); }
+  const projected = project(events);
+  return jsonResponse(res, 200, { meta, stages: projected.stages, feed: projected.feed });
+}
+
+async function handleGetEventsFile(req, res, id) {
+  if (!WORKFLOW_ID_RE.test(id)) return notFound(res);
+  const file = eventsPath(id);
+  let stat;
+  try { stat = await fsp.stat(file); }
+  catch { return notFound(res); }
+  res.writeHead(200, {
+    'Content-Type': 'application/x-ndjson',
+    'Content-Length': stat.size,
+  });
+  fs.createReadStream(file).pipe(res);
+}
+
+async function handleListWorkflows(req, res, url) {
+  const includeArchived = url.searchParams.has('include_archived') || url.searchParams.has('all');
+  let dirents;
+  try { dirents = await fsp.readdir(WORKFLOWS_DIR, { withFileTypes: true }); }
+  catch { return jsonResponse(res, 200, []); }
+
+  const summaries = [];
+  for (const dirent of dirents) {
+    if (!dirent.isDirectory()) continue;
+    const id = dirent.name;
+    if (!WORKFLOW_ID_RE.test(id)) continue;
+    const meta = await readMeta(id);
+    if (!meta) continue;
+    if (meta.archived && !includeArchived) continue;
+
+    let events;
+    try { events = readEventsFromFile(eventsPath(id)); }
+    catch { events = []; }
+
+    const projected = project(events);
+    const lastEvent = events.length ? events[events.length - 1] : null;
+    summaries.push({
+      id: meta.id || id,
+      title: meta.title || '',
+      goal: meta.goal || '',
+      started_at: meta.started_at,
+      last_event_at: lastEvent ? lastEvent.ts : meta.started_at,
+      status: meta.status || 'running',
+      stage_count: projected.stages.length,
+      completed_count: projected.stages.filter((s) => s.status === 'completed').length,
+      archived: !!meta.archived,
+    });
+  }
+
+  summaries.sort((a, b) => (b.last_event_at || '').localeCompare(a.last_event_at || ''));
+  return jsonResponse(res, 200, summaries);
+}
+
+async function handleArchive(req, res, id) {
+  if (!WORKFLOW_ID_RE.test(id)) return notFound(res);
+  if (!(await workflowExists(id))) return notFound(res);
+  try {
+    await enqueue(id, async () => {
+      const meta = (await readMeta(id)) || { id };
+      meta.archived = true;
+      const tmp = metaPath(id) + '.tmp';
+      await fsp.writeFile(tmp, JSON.stringify(meta, null, 2) + '\n');
+      await fsp.rename(tmp, metaPath(id));
+    });
+  } catch (e) {
+    return jsonError(res, 500, 'archive_failed', e.message);
+  }
+  return jsonResponse(res, 200, { id, archived: true });
+}
+
 function handle(req, res) {
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
   const route = `${req.method} ${url.pathname}`;
@@ -266,6 +347,19 @@ function handle(req, res) {
 
   if (route === 'POST /api/events') {
     return handleEventsPost(req, res);
+  }
+
+  if (route === 'GET /api/workflows') {
+    return handleListWorkflows(req, res, url);
+  }
+
+  const wfMatch = url.pathname.match(/^\/api\/workflows\/([^/]+)(\/.*)?$/);
+  if (wfMatch) {
+    const id = wfMatch[1];
+    const sub = wfMatch[2] || '';
+    if (req.method === 'GET' && sub === '') return handleGetWorkflow(req, res, id);
+    if (req.method === 'GET' && sub === '/events.jsonl') return handleGetEventsFile(req, res, id);
+    if (req.method === 'POST' && sub === '/archive') return handleArchive(req, res, id);
   }
 
   if (req.method === 'GET' && url.pathname === '/') {
