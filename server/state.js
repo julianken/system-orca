@@ -216,6 +216,25 @@ const STEP_KEYS = [
   '9_cleanup',
 ];
 
+const STEP_STATUS_VALUES = ['pending', 'running', 'done', 'failed'];
+
+// Cells reset on a REQUEST_CHANGES review cycle: implementation through bot verdict.
+const REVIEW_LOOP_BACK_KEYS = ['3_implement', '4_gate', '5_bot_review', '6_verdict'];
+
+// Expected emitter set per step. Mismatches warn but don't reject.
+const STEP_EXPECTED_EMITTERS = {
+  '0_claim':        new Set(['orchestrator']),
+  '1_reconcile':    new Set(['impl', 'orchestrator']),
+  '2_worktree':     new Set(['impl', 'orchestrator']),
+  '3_implement':    new Set(['impl']),
+  '4_gate':         new Set(['impl']),
+  '5_bot_review':   new Set(['bot', 'heartbeat']),
+  '6_verdict':      new Set(['bot', 'heartbeat']),
+  '7_mergify':      new Set(['orchestrator', 'bot']),
+  '8_verify_merge': new Set(['merged', 'heartbeat']),
+  '9_cleanup':      new Set(['orchestrator']),
+};
+
 function emptyWaveSummary() {
   return { total: 0, done: 0, in_progress: 0, blocked: 0, needs_human: 0 };
 }
@@ -275,6 +294,7 @@ function project_wave(events) {
   const wavesMap = new Map();
   const bandsMap = new Map();
   const issuesMap = new Map();
+  const escalationsMap = new Map();
   const feed = base.feed.slice();
 
   // Synthetic stages for issues — kept in a Map so issue_register can
@@ -362,6 +382,92 @@ function project_wave(events) {
         break;
       }
 
+      case 'step_set': {
+        const data = e.data || {};
+        if (typeof data.issue_id !== 'string' || typeof data.step_key !== 'string') {
+          pushWaveWarning(feed, e, 'step_set missing issue_id or step_key; dropped');
+          break;
+        }
+        const issue = issuesMap.get(data.issue_id);
+        if (!issue) {
+          pushWaveWarning(feed, e, `step_set for unregistered issue ${data.issue_id}; dropped`);
+          break;
+        }
+        if (!issue.steps) {
+          pushWaveWarning(feed, e, `step_set for ${data.issue_id} but step grid not yet seeded; dropped`);
+          break;
+        }
+        if (issue.steps[data.step_key] === 'n/a') {
+          pushWaveWarning(feed, e, `step_set rejected: ${data.issue_id}.${data.step_key} is n/a (tracker band); use issue_register to change`);
+          break;
+        }
+        // Emitter discipline (warn-only).
+        const expected = STEP_EXPECTED_EMITTERS[data.step_key];
+        if (expected && e.agent && !expected.has(e.agent)) {
+          pushWaveWarning(feed, e, `step_set ${data.step_key} emitted by '${e.agent}' (expected: ${[...expected].join('|')})`);
+        }
+        issue.steps[data.step_key] = data.status;
+        // Mirror as a stage_update on the synthesised stage (projection-only).
+        feed.push({
+          ts: e.ts,
+          agent: e.agent,
+          type: 'stage_update',
+          stage_id: data.issue_id,
+          summary: `step ${data.step_key}: ${data.status}`,
+        });
+        break;
+      }
+
+      case 'review_cycle': {
+        const data = e.data || {};
+        if (typeof data.issue_id !== 'string') {
+          pushWaveWarning(feed, e, 'review_cycle missing issue_id; dropped');
+          break;
+        }
+        const issue = issuesMap.get(data.issue_id);
+        if (!issue) {
+          pushWaveWarning(feed, e, `review_cycle for unregistered issue ${data.issue_id}; dropped`);
+          break;
+        }
+        const cycleN = Number(data.cycle_n) || 0;
+        const prior = Number(issue.review_cycles) || 0;
+        issue.review_cycles = Math.max(prior, cycleN);
+        if (data.verdict === 'REQUEST_CHANGES' && issue.steps) {
+          for (const k of REVIEW_LOOP_BACK_KEYS) {
+            if (issue.steps[k] !== 'n/a') issue.steps[k] = 'pending';
+          }
+          feed.push({
+            ts: e.ts,
+            agent: e.agent,
+            type: 'note',
+            stage_id: data.issue_id,
+            level: 'info',
+            text: `loop-back: review cycle ${cycleN} REQUEST_CHANGES on ${data.issue_id}; reset 3_implement..6_verdict to pending`,
+          });
+        }
+        // Threshold synthesis (projection-level, not real events).
+        if (issue.review_cycles >= 3 && !issue._cycle_warn_3) {
+          issue._cycle_warn_3 = true;
+          feed.push({
+            ts: e.ts,
+            agent: 'system-orca',
+            type: 'note',
+            stage_id: data.issue_id,
+            level: 'warn',
+            text: `${data.issue_id}: review_cycles=${issue.review_cycles} (≥3); investigate stuck PR`,
+          });
+        }
+        if (issue.review_cycles >= 5 && !issue._cycle_escalated) {
+          issue._cycle_escalated = true;
+          escalationsMap.set(data.issue_id, {
+            issue_id: data.issue_id,
+            reason: 'review_cycles_exhausted',
+            source: 'heartbeat-cycles',
+          });
+        }
+        break;
+      }
+
       default:
         break;
     }
@@ -375,7 +481,7 @@ function project_wave(events) {
     waves: Array.from(wavesMap.values()),
     bands: Array.from(bandsMap.values()),
     issues: Array.from(issuesMap.values()),
-    escalations: [],
+    escalations: Array.from(escalationsMap.values()),
     critical_path: null,
     summary: emptyWaveSummary(),
   };
