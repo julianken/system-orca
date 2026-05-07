@@ -2,11 +2,221 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>system-orca — workflow</title>
+  <style>
+    :root {
+      --bg: #09090b;
+      --bg-elev: #18181b;
+      --bg-elev-2: #27272a;
+      --border: #3f3f46;
+      --text: #fafafa;
+      --text-2: #a1a1aa;
+      --accent: #84cc16;
+      --ok: #22c55e;
+      --err: #ef4444;
+      --warn: #f59e0b;
+      --critic: #0ea5e9;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      margin: 0;
+      min-height: 100vh;
+    }
+    a { color: inherit; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    header.wf-head {
+      padding: 24px 32px;
+      border-bottom: 1px solid var(--border);
+    }
+    header.wf-head .breadcrumb {
+      font-size: 12px; color: var(--text-2); margin-bottom: 8px;
+    }
+    h1#wf-title { margin: 0 0 6px 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+    p#wf-goal { margin: 0 0 12px 0; color: var(--text-2); font-size: 14px; line-height: 1.5; }
+    .wf-meta { color: var(--text-2); font-size: 12px; display: flex; gap: 16px; flex-wrap: wrap; }
+    .wf-meta strong { color: var(--text); font-weight: 500; }
+
+    nav.tabs {
+      display: flex;
+      gap: 4px;
+      padding: 0 32px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+    }
+    nav.tabs button {
+      background: transparent;
+      color: var(--text-2);
+      border: 0;
+      padding: 12px 16px;
+      font: inherit;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+    }
+    nav.tabs button[aria-selected="true"] {
+      color: var(--text);
+      border-bottom-color: var(--accent);
+    }
+    nav.tabs button:hover:not([aria-selected="true"]) { color: var(--text); }
+
+    main { padding: 24px 32px; }
+    section[hidden] { display: none; }
+
+    .stage {
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 12px;
+    }
+    .stage[data-type="critic"] {
+      border-style: dashed;
+      border-color: var(--critic);
+    }
+    .stage-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    .stage-title { font-weight: 500; font-size: 15px; }
+    .stage-id { color: var(--text-2); font-size: 12px; font-family: ui-monospace, monospace; margin-right: 8px; }
+    .stage-summary { color: var(--text); font-size: 13px; line-height: 1.5; margin: 8px 0; }
+    .stage-list-label {
+      color: var(--text-2);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-top: 12px;
+      margin-bottom: 4px;
+    }
+    .stage-list {
+      margin: 0; padding-left: 18px; color: var(--text-2);
+      font-size: 13px; line-height: 1.5;
+      max-height: 200px; overflow-y: auto;
+    }
+    .stage-list li { margin-bottom: 2px; }
+    .stage-list li::marker { color: var(--bg-elev-2); }
+    .stage-verdict {
+      margin-top: 12px;
+      padding: 8px 12px;
+      background: var(--bg-elev-2);
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--text-2);
+    }
+    .stage-verdict strong { color: var(--text); font-weight: 500; }
+    .stage-children {
+      margin-top: 12px;
+      padding-left: 12px;
+      border-left: 2px solid var(--border);
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: lowercase;
+      letter-spacing: 0.02em;
+      border: 1px solid transparent;
+    }
+    .pill-pending   { background: var(--bg-elev-2); color: var(--text-2); }
+    .pill-blocked   { background: transparent; color: var(--text-2); border: 1px dashed var(--border); }
+    .pill-running   { background: var(--accent); color: #000; animation: pulse 1.6s ease-in-out infinite; }
+    .pill-completed { background: var(--ok); color: #000; }
+    .pill-failed    { background: var(--err); color: #fff; }
+    .pill-archived  { background: var(--bg-elev-2); color: var(--text-2); border-color: var(--border); }
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(132, 204, 22, 0.6); }
+      50%      { box-shadow: 0 0 0 6px rgba(132, 204, 22, 0); }
+    }
+
+    pre.mermaid {
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px;
+      overflow: auto;
+      text-align: center;
+    }
+
+    section#feed {
+      margin-top: 32px;
+      border-top: 1px solid var(--border);
+      padding-top: 24px;
+    }
+    section#feed h2 {
+      font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;
+      color: var(--text-2); margin: 0 0 12px 0; font-weight: 500;
+    }
+    .feed-entry {
+      display: flex;
+      gap: 12px;
+      align-items: baseline;
+      padding: 6px 0;
+      border-bottom: 1px solid var(--bg-elev-2);
+      font-size: 12px;
+      color: var(--text-2);
+    }
+    .feed-entry:last-child { border-bottom: 0; }
+    .feed-entry .ts { font-family: ui-monospace, monospace; color: var(--text-2); flex-shrink: 0; }
+    .feed-entry .agent { color: var(--text); font-weight: 500; }
+    .feed-entry .type { color: var(--accent); font-family: ui-monospace, monospace; }
+    .feed-entry[data-event-type="stage_fail"] .type { color: var(--err); }
+    .feed-entry[data-level="warn"] .type { color: var(--warn); }
+    .feed-entry .text { color: var(--text-2); flex: 1; }
+
+    .raw-link {
+      display: inline-block;
+      margin-top: 16px;
+      padding: 6px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--text-2);
+    }
+    .raw-link:hover { color: var(--text); border-color: var(--text-2); text-decoration: none; }
+  </style>
 </head>
 <body>
-  <h1>workflow</h1>
-  <p>placeholder — stages + diagram tabs land in phases 5–6</p>
-  <script src="/static/app.js"></script>
+  <header class="wf-head">
+    <div class="breadcrumb"><a href="/">← back to all workflows</a></div>
+    <h1 id="wf-title">workflow</h1>
+    <p id="wf-goal"></p>
+    <div class="wf-meta">
+      <span>started <span id="wf-started">—</span></span>
+      <span>last update <span id="wf-last-update">—</span></span>
+      <span id="wf-status-pill"></span>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button data-tab="stages"  role="tab" aria-selected="true">Stages</button>
+    <button data-tab="diagram" role="tab" aria-selected="false">Diagram</button>
+  </nav>
+
+  <main>
+    <section id="tab-stages" role="tabpanel"></section>
+    <section id="tab-diagram" role="tabpanel" hidden>
+      <pre class="mermaid" id="diagram-target">flowchart TD
+  loading["loading…"]</pre>
+    </section>
+
+    <section id="feed">
+      <h2>Updates feed</h2>
+      <div id="feed-list"></div>
+      <a class="raw-link" id="raw-events-link" href="#">Raw events</a>
+    </section>
+  </main>
+
+  <script src="/static/vendor/mermaid.min.js"></script>
+  <script type="module" src="/static/app.js"></script>
 </body>
 </html>
