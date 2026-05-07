@@ -2,6 +2,7 @@
 
 const http = require('node:http');
 const fs = require('node:fs');
+const fsp = require('node:fs').promises;
 const path = require('node:path');
 const os = require('node:os');
 
@@ -26,6 +27,21 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
 };
 
+const EVENT_TYPES = new Set([
+  'workflow_init',
+  'plan_declared',
+  'stage_register',
+  'stage_start',
+  'stage_update',
+  'stage_complete',
+  'stage_fail',
+  'workflow_complete',
+  'note',
+]);
+
+const WORKFLOW_ID_RE = /^[a-z0-9_-]{1,64}$/;
+const BODY_CAP_BYTES = 1024 * 1024;
+
 function jsonResponse(res, status, body, extraHeaders) {
   const buf = Buffer.from(JSON.stringify(body));
   res.writeHead(status, {
@@ -34,6 +50,10 @@ function jsonResponse(res, status, body, extraHeaders) {
     ...(extraHeaders || {}),
   });
   res.end(buf);
+}
+
+function jsonError(res, status, code, message) {
+  return jsonResponse(res, status, { error: { code, message } });
 }
 
 function notFound(res) {
@@ -56,8 +76,172 @@ function serveStatic(res, relPath) {
   });
 }
 
-function serveStaticFile(res, fileName) {
-  serveStatic(res, fileName);
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    const ctype = (req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+    if (ctype && ctype !== 'application/json') {
+      const err = new Error(`unsupported content-type: ${ctype}`);
+      err.statusCode = 415;
+      return reject(err);
+    }
+    let total = 0;
+    const chunks = [];
+    req.on('data', (chunk) => {
+      total += chunk.length;
+      if (total > BODY_CAP_BYTES) {
+        const err = new Error(`request body exceeds ${BODY_CAP_BYTES}-byte cap`);
+        err.statusCode = 413;
+        req.destroy();
+        return reject(err);
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      if (!raw) return resolve({});
+      try { resolve(JSON.parse(raw)); }
+      catch (e) {
+        const err = new Error(`invalid JSON: ${e.message}`);
+        err.statusCode = 400;
+        reject(err);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+function validateEvent(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return 'event must be a JSON object';
+  }
+  if (typeof body.workflow_id !== 'string' || !WORKFLOW_ID_RE.test(body.workflow_id)) {
+    return 'workflow_id must match /^[a-z0-9_-]{1,64}$/';
+  }
+  if (!EVENT_TYPES.has(body.type)) {
+    return `type must be one of: ${[...EVENT_TYPES].join(', ')}`;
+  }
+  if (body.stage_id != null && typeof body.stage_id !== 'string') {
+    return 'stage_id must be a string when present';
+  }
+  if (body.agent != null && typeof body.agent !== 'string') {
+    return 'agent must be a string when present';
+  }
+  if (body.data != null && (typeof body.data !== 'object' || Array.isArray(body.data))) {
+    return 'data must be an object when present';
+  }
+  return null;
+}
+
+function workflowDir(id) {
+  return path.join(WORKFLOWS_DIR, id);
+}
+
+function eventsPath(id) {
+  return path.join(workflowDir(id), 'events.jsonl');
+}
+
+function metaPath(id) {
+  return path.join(workflowDir(id), 'meta.json');
+}
+
+const queues = new Map();
+
+function enqueue(id, work) {
+  const prev = queues.get(id) || Promise.resolve();
+  const next = prev.catch(() => {}).then(work);
+  queues.set(id, next.catch(() => {}));
+  return next;
+}
+
+async function appendEventLine(id, event) {
+  const line = JSON.stringify(event) + '\n';
+  await fsp.appendFile(eventsPath(id), line);
+}
+
+async function ensureWorkflowDir(id) {
+  await fsp.mkdir(workflowDir(id), { recursive: true });
+}
+
+async function workflowExists(id) {
+  try { await fsp.access(workflowDir(id)); return true; }
+  catch { return false; }
+}
+
+async function writeMeta(id, meta) {
+  await fsp.writeFile(metaPath(id), JSON.stringify(meta, null, 2) + '\n');
+}
+
+async function readMeta(id) {
+  try { return JSON.parse(await fsp.readFile(metaPath(id), 'utf8')); }
+  catch { return null; }
+}
+
+async function applyWorkflowInit(id, event) {
+  await ensureWorkflowDir(id);
+  const data = event.data || {};
+  const meta = {
+    id,
+    title: data.title || '',
+    goal: data.goal || '',
+    started_at: event.ts,
+    status: 'running',
+    archived: false,
+    artifact_root: data.artifact_root || null,
+  };
+  await writeMeta(id, meta);
+}
+
+async function applyWorkflowComplete(id) {
+  const meta = (await readMeta(id)) || {};
+  meta.status = 'completed';
+  await writeMeta(id, meta);
+}
+
+async function handleEventsPost(req, res) {
+  let body;
+  try { body = await readJsonBody(req); }
+  catch (e) {
+    const status = e.statusCode || 400;
+    const code = status === 415 ? 'unsupported_media_type'
+               : status === 413 ? 'payload_too_large'
+               : 'bad_request';
+    return jsonError(res, status, code, e.message);
+  }
+
+  const validationError = validateEvent(body);
+  if (validationError) return jsonError(res, 400, 'invalid_event', validationError);
+
+  const id = body.workflow_id;
+  const event = {
+    ts: typeof body.ts === 'string' ? body.ts : new Date().toISOString(),
+    workflow_id: id,
+    agent: body.agent || 'orchestrator',
+    type: body.type,
+    stage_id: body.stage_id == null ? null : body.stage_id,
+    data: body.data || {},
+  };
+
+  try {
+    await enqueue(id, async () => {
+      if (event.type === 'workflow_init') {
+        await applyWorkflowInit(id, event);
+      } else if (!(await workflowExists(id))) {
+        const err = new Error(`workflow not found: ${id}`);
+        err.statusCode = 404;
+        throw err;
+      }
+      await appendEventLine(id, event);
+      if (event.type === 'workflow_complete') {
+        await applyWorkflowComplete(id);
+      }
+    });
+  } catch (e) {
+    const status = e.statusCode || 500;
+    const code = status === 404 ? 'workflow_not_found' : 'append_failed';
+    return jsonError(res, status, code, e.message);
+  }
+
+  return jsonResponse(res, 200, { ts: event.ts, accepted: true });
 }
 
 function handle(req, res) {
@@ -80,12 +264,16 @@ function handle(req, res) {
     }, { 'Cache-Control': 'no-store' });
   }
 
+  if (route === 'POST /api/events') {
+    return handleEventsPost(req, res);
+  }
+
   if (req.method === 'GET' && url.pathname === '/') {
-    return serveStaticFile(res, 'index.html');
+    return serveStatic(res, 'index.html');
   }
 
   if (req.method === 'GET' && url.pathname.startsWith('/w/')) {
-    return serveStaticFile(res, 'workflow.html');
+    return serveStatic(res, 'workflow.html');
   }
 
   if (req.method === 'GET' && url.pathname.startsWith('/static/')) {
