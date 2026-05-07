@@ -30,6 +30,12 @@ function nodeClass(stage) {
   return stage.status || 'pending';
 }
 
+function secondaryStatusClass(stage) {
+  const visual = nodeClass(stage);
+  const status = stage.status || 'pending';
+  return visual !== status ? status : null;
+}
+
 function stateToMermaid(state, opts = {}) {
   const includeStatus = opts.include_status !== false;
   const stages = (state && Array.isArray(state.stages)) ? state.stages : [];
@@ -48,9 +54,13 @@ function stateToMermaid(state, opts = {}) {
   const lines = ['flowchart TD'];
 
   function emitStage(s, indent = '  ') {
-    const inner = nodeText(s);
+    const inner = nodeText(s, includeStatus);
     const suffix = includeStatus ? `:::${nodeClass(s)}` : '';
     lines.push(`${indent}${s.id}["${inner}"]${suffix}`);
+    if (includeStatus) {
+      const extra = secondaryStatusClass(s);
+      if (extra) lines.push(`${indent}class ${s.id} ${extra}`);
+    }
   }
 
   for (const s of topLevel) {

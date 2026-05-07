@@ -234,7 +234,13 @@ let mermaidInitDone = false;
 function initMermaid() {
   if (mermaidInitDone) return;
   if (typeof window.mermaid === 'undefined') return;
-  window.mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict' });
+  window.mermaid.initialize({
+    startOnLoad: false,
+    theme: 'dark',
+    securityLevel: 'strict',
+    themeVariables: { fontSize: '48px' },
+    flowchart: { padding: 24, nodeSpacing: 60, rankSpacing: 90 },
+  });
   mermaidInitDone = true;
 }
 
