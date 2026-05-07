@@ -18,21 +18,22 @@ const LOG_FILE = path.join(HOME, 'server.log');
 const SERVER_PATH = path.join(__dirname, '..', 'server', 'server.js');
 const URL_BASE = `http://${HOST}:${PORT}`;
 
-const SUBCOMMANDS = ['up', 'down', 'status', 'init', 'event', 'archive', 'list', 'tail'];
+const SUBCOMMANDS = ['up', 'down', 'status', 'init', 'event', 'plan', 'list', 'archive', 'tail'];
 
 function usage() {
   return [
     `usage: ${NAME} <subcommand> [args]`,
     '',
     'subcommands:',
-    '  up      start the local dashboard server (idempotent)',
-    '  down    stop the local dashboard server (idempotent)',
-    '  status  print server liveness + workflow counts',
-    '  init    --title T --goal G [--id wf_…]  create a workflow',
+    '  up                                start the local dashboard server (idempotent)',
+    '  down                              stop the local dashboard server (idempotent)',
+    '  status                            print server liveness + workflow counts',
+    '  init    --title T --goal G [--id] create a workflow; prints id then URL',
     '  event   --workflow ID --type T [--stage-id S] [--data JSON|@file]',
-    '',
-    'phase-3+ subcommands (not yet implemented):',
-    '  archive, list, tail',
+    '  plan    --workflow ID --file P    POST plan_declared from a JSON file',
+    '  list    [--all]                   list workflows (table)',
+    '  archive <id>                      archive a workflow',
+    '  tail    <id>                      stream events.jsonl (^C to exit)',
     '',
     `runtime root: ${HOME}`,
     `server URL:   ${URL_BASE}`,
@@ -153,6 +154,7 @@ async function up() {
     const probe = await probeIdentity();
     if (probe.ours) {
       process.stdout.write(`server already up at ${URL_BASE}\n`);
+      tryLinkToLocalBin();
       return 0;
     }
     const r = probe.response;
@@ -174,7 +176,50 @@ async function up() {
     return 1;
   }
   process.stdout.write(`server up at ${URL_BASE}\n`);
+  tryLinkToLocalBin();
   return 0;
+}
+
+function tryLinkToLocalBin() {
+  const target = path.resolve(__filename);
+  const linkDir = path.join(os.homedir(), '.local', 'bin');
+  const linkPath = path.join(linkDir, 'system-orca');
+  let dirOnPath = false;
+  try {
+    dirOnPath = (process.env.PATH || '').split(':').some((p) => {
+      try { return fs.realpathSync(p) === fs.realpathSync(linkDir); }
+      catch { return p === linkDir; }
+    });
+  } catch { /* fall through */ }
+
+  let linkDirExists = false;
+  try { linkDirExists = fs.statSync(linkDir).isDirectory(); }
+  catch { linkDirExists = false; }
+
+  if (!linkDirExists) {
+    if (!process.env.SYSTEM_ORCA_QUIET) {
+      process.stderr.write(`note: ${linkDir} not found — add the absolute path to PATH or alias:\n  alias system-orca='${target}'\n`);
+    }
+    return;
+  }
+  try {
+    const existing = fs.readlinkSync(linkPath);
+    if (existing === target) return;
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      process.stderr.write(`note: ${linkPath} is not a symlink we control; skipping link step\n`);
+      return;
+    }
+  }
+  try {
+    try { fs.unlinkSync(linkPath); } catch { /* not present */ }
+    fs.symlinkSync(target, linkPath);
+    if (!dirOnPath) {
+      process.stderr.write(`note: linked ${linkPath} → ${target}, but ${linkDir} is not on PATH; add it to PATH to use the bare name 'system-orca'.\n`);
+    } else {
+      process.stdout.write(`linked ${linkPath} → ${path.basename(target)}\n`);
+    }
+  } catch { /* permission denied or readonly fs — non-fatal */ }
 }
 
 async function down() {
@@ -257,6 +302,186 @@ async function status() {
 function notImplemented(name) {
   process.stderr.write(`${NAME} ${name}: not yet implemented (lands in a later phase)\n`);
   return 2;
+}
+
+function pad(s, n) {
+  s = String(s == null ? '' : s);
+  return s.length >= n ? s : s + ' '.repeat(n - s.length);
+}
+
+async function list(rest) {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: rest,
+      options: { all: { type: 'boolean', default: false } },
+      allowPositionals: false,
+    });
+  } catch (err) {
+    process.stderr.write(`error: ${err.message}\n`);
+    return 1;
+  }
+  const url = parsed.values.all ? '/api/workflows?include_archived=true' : '/api/workflows';
+  const r = await getJson(url, 2000);
+  if (!r || r.status !== 200 || !Array.isArray(r.json)) {
+    process.stderr.write(`error: list failed — ${describePostFailure(r || {})}\n`);
+    return 1;
+  }
+  const rows = r.json;
+  if (!rows.length) {
+    process.stdout.write(parsed.values.all ? 'no workflows\n' : 'no active workflows (try --all)\n');
+    return 0;
+  }
+  const idW = Math.max(2, ...rows.map((w) => (w.id || '').length));
+  const statusW = Math.max(6, ...rows.map((w) => (w.archived ? 'archived' : (w.status || '')).length));
+  const titleW = Math.min(40, Math.max(5, ...rows.map((w) => (w.title || '').length)));
+  process.stdout.write(`${pad('ID', idW)}  ${pad('STATUS', statusW)}  ${pad('TITLE', titleW)}  LAST UPDATE\n`);
+  for (const w of rows) {
+    const status = w.archived ? 'archived' : (w.status || '');
+    const title = (w.title || '').slice(0, titleW);
+    process.stdout.write(`${pad(w.id, idW)}  ${pad(status, statusW)}  ${pad(title, titleW)}  ${w.last_event_at || ''}\n`);
+  }
+  return 0;
+}
+
+async function archive(rest) {
+  if (!rest.length || rest[0].startsWith('-')) {
+    process.stderr.write('error: archive requires a workflow id\n  usage: system-orca archive <id>\n');
+    return 1;
+  }
+  const id = rest[0];
+  const r = await postJson(`/api/workflows/${encodeURIComponent(id)}/archive`, {}, 5000);
+  if (!r || r.status !== 200) {
+    process.stderr.write(`error: archive failed — ${describePostFailure(r)}\n`);
+    return 1;
+  }
+  process.stdout.write(`archived ${id}\n`);
+  return 0;
+}
+
+function formatEventLine(event) {
+  const ts = event.ts ? new Date(event.ts).toISOString().slice(11, 19) : '--:--:--';
+  const agent = event.agent || '?';
+  const stage = event.stage_id ? ` stage=${event.stage_id}` : '';
+  const d = event.data || {};
+  const text = typeof d.summary === 'string' ? d.summary
+             : typeof d.text === 'string'    ? d.text
+             : '';
+  const tail = text ? ` ${text}` : '';
+  return `[${ts}] [${agent}] [${event.type}]${stage}${tail}`;
+}
+
+async function tail(rest) {
+  if (!rest.length || rest[0].startsWith('-')) {
+    process.stderr.write('error: tail requires a workflow id\n  usage: system-orca tail <id>\n');
+    return 1;
+  }
+  const id = rest[0];
+  const file = path.join(HOME, 'workflows', id, 'events.jsonl');
+  let buffered = '';
+  let position = 0;
+  try {
+    const stat = fs.statSync(file);
+    const fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(stat.size);
+    fs.readSync(fd, buf, 0, stat.size, 0);
+    fs.closeSync(fd);
+    position = stat.size;
+    const text = buf.toString('utf8');
+    for (const line of text.split('\n')) {
+      if (!line) continue;
+      try { process.stdout.write(formatEventLine(JSON.parse(line)) + '\n'); }
+      catch { process.stdout.write(`(unparseable) ${line}\n`); }
+    }
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      process.stderr.write(`error: ${err.message}\n`);
+      return 1;
+    }
+    process.stderr.write(`(no events.jsonl yet at ${file}; waiting for new events…)\n`);
+  }
+
+  return new Promise((resolve) => {
+    const drain = () => {
+      try {
+        const stat = fs.statSync(file);
+        if (stat.size <= position) return;
+        const fd = fs.openSync(file, 'r');
+        const len = stat.size - position;
+        const buf = Buffer.alloc(len);
+        fs.readSync(fd, buf, 0, len, position);
+        fs.closeSync(fd);
+        position = stat.size;
+        buffered += buf.toString('utf8');
+        let nl;
+        while ((nl = buffered.indexOf('\n')) !== -1) {
+          const line = buffered.slice(0, nl);
+          buffered = buffered.slice(nl + 1);
+          if (!line) continue;
+          try { process.stdout.write(formatEventLine(JSON.parse(line)) + '\n'); }
+          catch { process.stdout.write(`(unparseable) ${line}\n`); }
+        }
+      } catch (err) {
+        if (err.code !== 'ENOENT') process.stderr.write(`tail: ${err.message}\n`);
+      }
+    };
+    let watcher = null;
+    try { watcher = fs.watch(path.dirname(file), { persistent: true }, drain); }
+    catch { /* fall back to polling */ }
+    const poll = setInterval(drain, 500);
+    const onSignal = () => {
+      clearInterval(poll);
+      if (watcher) watcher.close();
+      process.stdout.write('\n');
+      resolve(0);
+    };
+    process.on('SIGINT', onSignal);
+    process.on('SIGTERM', onSignal);
+  });
+}
+
+async function plan(rest) {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: rest,
+      options: {
+        workflow: { type: 'string' },
+        file:     { type: 'string' },
+      },
+      allowPositionals: false,
+    });
+  } catch (err) {
+    process.stderr.write(`error: ${err.message}\n`);
+    return 1;
+  }
+  const { workflow, file } = parsed.values;
+  if (!workflow || !file) {
+    process.stderr.write('error: --workflow and --file are required\n');
+    return 1;
+  }
+  let payload;
+  try { payload = JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch (err) {
+    process.stderr.write(`error: cannot read ${file}: ${err.message}\n`);
+    return 1;
+  }
+  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.stages)) {
+    process.stderr.write('error: plan file must be JSON object with a "stages" array\n');
+    return 1;
+  }
+  const r = await postJson('/api/events', {
+    workflow_id: workflow,
+    type: 'plan_declared',
+    agent: process.env.SYSTEM_ORCA_AGENT || 'orchestrator',
+    data: { stages: payload.stages },
+  }, 10000);
+  if (!r || r.status !== 200) {
+    process.stderr.write(`error: plan failed — ${describePostFailure(r)}\n`);
+    return 1;
+  }
+  process.stdout.write(`plan declared (${payload.stages.length} stages) for ${workflow}\n`);
+  return 0;
 }
 
 function todayIso() {
@@ -388,6 +613,10 @@ async function main() {
     case 'status': return status();
     case 'init':   return init(rest);
     case 'event':  return event(rest);
+    case 'plan':   return plan(rest);
+    case 'list':   return list(rest);
+    case 'archive':return archive(rest);
+    case 'tail':   return tail(rest);
     default:       return notImplemented(sub);
   }
 }
