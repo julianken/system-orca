@@ -18,7 +18,7 @@ const LOG_FILE = path.join(HOME, 'server.log');
 const SERVER_PATH = path.join(__dirname, '..', 'server', 'server.js');
 const URL_BASE = `http://${HOST}:${PORT}`;
 
-const SUBCOMMANDS = ['up', 'down', 'status', 'init', 'event', 'plan', 'list', 'archive', 'tail'];
+const SUBCOMMANDS = ['up', 'down', 'status', 'init', 'event', 'plan', 'list', 'archive', 'tail', 'heartbeat', 'monitor'];
 
 function usage() {
   return [
@@ -26,7 +26,7 @@ function usage() {
     '',
     'subcommands:',
     '  up                                start the local dashboard server (idempotent)',
-    '  down                              stop the local dashboard server (idempotent)',
+    '  down [--workflow ID]              stop server, OR reap heartbeat+monitor for a workflow',
     '  status                            print server liveness + workflow counts',
     '  init    --title T --goal G [--id] [--mode wave]   create a workflow',
     '  event   --workflow ID --type T [--stage-id S] [--data JSON|@file]',
@@ -34,6 +34,8 @@ function usage() {
     '  list    [--all]                   list workflows (table)',
     '  archive <id>                      archive a workflow',
     '  tail    <id>                      stream events.jsonl (^C to exit)',
+    '  heartbeat --workflow ID --mode wave --github-repo R [--interval-sec N]',
+    '  monitor   --workflow ID --mode wave --github-repo R [--interval-sec N] [--stall-after-sec N]',
     '',
     `runtime root: ${HOME}`,
     `server URL:   ${URL_BASE}`,
@@ -222,7 +224,48 @@ function tryLinkToLocalBin() {
   } catch { /* permission denied or readonly fs — non-fatal */ }
 }
 
-async function down() {
+async function reapWorkflowDaemon(workflow, scriptName) {
+  const pidFile = path.join(HOME, 'workflows', workflow, `${scriptName}.pid`);
+  let pid;
+  try { pid = Number(fs.readFileSync(pidFile, 'utf8').trim()); }
+  catch { return false; }
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  if (!isAlive(pid)) {
+    try { fs.unlinkSync(pidFile); } catch { /* ok */ }
+    return true;
+  }
+  try { process.kill(pid, 'SIGTERM'); } catch { /* gone */ }
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    if (!isAlive(pid)) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  try { fs.unlinkSync(pidFile); } catch { /* gone */ }
+  process.stdout.write(`${scriptName} reaped (pid ${pid})\n`);
+  return true;
+}
+
+async function down(rest = []) {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: rest,
+      options: { workflow: { type: 'string' } },
+      allowPositionals: false,
+    });
+  } catch (err) {
+    process.stderr.write(`error: ${err.message}\n`);
+    return 1;
+  }
+  const wf = parsed.values.workflow;
+  if (wf) {
+    let any = false;
+    for (const name of ['heartbeat', 'monitor']) {
+      if (await reapWorkflowDaemon(wf, name)) any = true;
+    }
+    if (!any) process.stdout.write(`no daemons for ${wf}\n`);
+    return 0;
+  }
   const pid = readPid();
   if (!pid) {
     process.stdout.write('server is down\n');
@@ -234,7 +277,7 @@ async function down() {
     process.stdout.write('server is down (stale pidfile cleaned)\n');
     return 0;
   }
-  try { process.kill(pid, 'SIGTERM'); } catch { /* race: died between checks */ }
+  try { process.kill(pid, 'SIGTERM'); } catch { /* race */ }
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
     if (!isAlive(pid)) break;
@@ -440,6 +483,68 @@ async function tail(rest) {
   });
 }
 
+function spawnWorkflowDaemon(scriptName, parsed) {
+  const { workflow } = parsed.values;
+  if (!workflow) {
+    process.stderr.write(`error: --workflow is required\n`);
+    return 1;
+  }
+  const wfDir = path.join(HOME, 'workflows', workflow);
+  fs.mkdirSync(wfDir, { recursive: true });
+  const logFile = path.join(wfDir, `${scriptName}.log`);
+  const scriptPath = path.join(__dirname, '..', 'server', `${scriptName}.js`);
+  const args = [scriptPath];
+  for (const [k, v] of Object.entries(parsed.values)) {
+    if (v == null) continue;
+    args.push(`--${k}`, String(v));
+  }
+  const logFd = fs.openSync(logFile, 'a');
+  const child = spawn(process.execPath, args, {
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
+    env: process.env,
+  });
+  child.unref();
+  process.stdout.write(`${scriptName} spawned for ${workflow} (pid ${child.pid}); log ${logFile}\n`);
+  return 0;
+}
+
+async function heartbeat(rest) {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: rest,
+      options: {
+        workflow: { type: 'string' },
+        mode: { type: 'string' },
+        'github-repo': { type: 'string' },
+        'github-epic': { type: 'string' },
+        'interval-sec': { type: 'string' },
+      },
+      allowPositionals: false,
+    });
+  } catch (err) { process.stderr.write(`error: ${err.message}\n`); return 1; }
+  return spawnWorkflowDaemon('heartbeat', parsed);
+}
+
+async function monitor(rest) {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: rest,
+      options: {
+        workflow: { type: 'string' },
+        mode: { type: 'string' },
+        'github-repo': { type: 'string' },
+        'interval-sec': { type: 'string' },
+        'stall-after-sec': { type: 'string' },
+      },
+      allowPositionals: false,
+    });
+  } catch (err) { process.stderr.write(`error: ${err.message}\n`); return 1; }
+  return spawnWorkflowDaemon('monitor', parsed);
+}
+
 async function plan(rest) {
   let parsed;
   try {
@@ -615,16 +720,18 @@ async function main() {
   }
 
   switch (sub) {
-    case 'up':     return up();
-    case 'down':   return down();
-    case 'status': return status();
-    case 'init':   return init(rest);
-    case 'event':  return event(rest);
-    case 'plan':   return plan(rest);
-    case 'list':   return list(rest);
-    case 'archive':return archive(rest);
-    case 'tail':   return tail(rest);
-    default:       return notImplemented(sub);
+    case 'up':        return up();
+    case 'down':      return down(rest);
+    case 'status':    return status();
+    case 'init':      return init(rest);
+    case 'event':     return event(rest);
+    case 'plan':      return plan(rest);
+    case 'list':      return list(rest);
+    case 'archive':   return archive(rest);
+    case 'tail':      return tail(rest);
+    case 'heartbeat': return heartbeat(rest);
+    case 'monitor':   return monitor(rest);
+    default:          return notImplemented(sub);
   }
 }
 
