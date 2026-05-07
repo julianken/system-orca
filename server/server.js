@@ -43,14 +43,18 @@ const EVENT_TYPES = new Set([
   'note',
   // v2-applicable in v1 base
   'workflow_fail',
-  // v2 wave-mode (Phase 2 ingest; later phases add github_state_set,
-  // critical_path_update, escalation_add, escalation_clear)
+  // v2 wave-mode Phase 2
   'wave_register',
   'band_register',
   'issue_register',
   // v2 wave-mode Phase 3
   'step_set',
   'review_cycle',
+  // v2 wave-mode Phase 4–5
+  'github_state_set',
+  'critical_path_update',
+  'escalation_add',
+  'escalation_clear',
 ]);
 
 const STEP_KEY_ENUM = new Set([
@@ -320,6 +324,72 @@ async function handleGetDiagram(req, res, id, url) {
   res.end(buf);
 }
 
+async function handleGetWaveState(req, res, id) {
+  if (!WORKFLOW_ID_RE.test(id)) return notFound(res);
+  if (!(await workflowExists(id))) return notFound(res);
+  const persistedMeta = (await readMeta(id)) || {};
+  if (persistedMeta.mode !== 'wave') {
+    return jsonError(res, 409, 'not_wave_mode', 'wave-state endpoint requires meta.mode==="wave"');
+  }
+  let events;
+  try { events = readEventsFromFile(eventsPath(id)); }
+  catch (e) { return jsonError(res, 500, 'corrupt_events', e.message); }
+  const projected = project(events);
+  return jsonResponse(res, 200, {
+    meta: { ...projected.meta, archived: !!persistedMeta.archived, artifact_root: persistedMeta.artifact_root ?? null },
+    waves: projected.waves || [],
+    bands: projected.bands || [],
+    issues: projected.issues || [],
+    escalations: projected.escalations || [],
+    critical_path: projected.critical_path || null,
+    summary: projected.summary || null,
+  });
+}
+
+async function handleGetIssues(req, res, id) {
+  if (!WORKFLOW_ID_RE.test(id)) return notFound(res);
+  if (!(await workflowExists(id))) return notFound(res);
+  const persistedMeta = (await readMeta(id)) || {};
+  if (persistedMeta.mode !== 'wave') {
+    return jsonError(res, 409, 'not_wave_mode', 'issues endpoint requires meta.mode==="wave"');
+  }
+  let events;
+  try { events = readEventsFromFile(eventsPath(id)); }
+  catch (e) { return jsonError(res, 500, 'corrupt_events', e.message); }
+  const projected = project(events);
+  const issues = (projected.issues || []).slice().sort((a, b) => {
+    const wA = a.wave_id || '', wB = b.wave_id || '';
+    if (wA !== wB) return wA.localeCompare(wB);
+    const bA = a.band_id || '', bB = b.band_id || '';
+    if (bA !== bB) return bA.localeCompare(bB);
+    return (a.issue_id || '').localeCompare(b.issue_id || '');
+  });
+  return jsonResponse(res, 200, issues);
+}
+
+async function handleGetIssueActivity(req, res, id, issueId) {
+  if (!WORKFLOW_ID_RE.test(id)) return notFound(res);
+  if (!(await workflowExists(id))) return notFound(res);
+  let events;
+  try { events = readEventsFromFile(eventsPath(id)); }
+  catch (e) { return jsonError(res, 500, 'corrupt_events', e.message); }
+  // Verify issue exists in projection.
+  const projected = project(events);
+  const found = (projected.issues || []).some((i) => i.issue_id === issueId);
+  if (!found) return notFound(res);
+  const lines = events
+    .filter((e) => (e.data && e.data.issue_id === issueId) || e.stage_id === issueId)
+    .map((e) => JSON.stringify(e))
+    .join('\n');
+  const body = lines + (lines ? '\n' : '');
+  const buf = Buffer.from(body, 'utf8');
+  res.writeHead(200, {
+    'Content-Type': 'application/x-ndjson',
+    'Content-Length': buf.length,
+  });
+  res.end(buf);
+}
+
 async function handleGetEventsFile(req, res, id) {
   if (!WORKFLOW_ID_RE.test(id)) return notFound(res);
   const file = eventsPath(id);
@@ -423,7 +493,13 @@ function handle(req, res) {
     if (req.method === 'GET' && sub === '') return handleGetWorkflow(req, res, id);
     if (req.method === 'GET' && sub === '/diagram.mmd') return handleGetDiagram(req, res, id, url);
     if (req.method === 'GET' && sub === '/events.jsonl') return handleGetEventsFile(req, res, id);
+    if (req.method === 'GET' && sub === '/wave-state') return handleGetWaveState(req, res, id);
+    if (req.method === 'GET' && sub === '/issues') return handleGetIssues(req, res, id);
     if (req.method === 'POST' && sub === '/archive') return handleArchive(req, res, id);
+    const issueActivityMatch = sub.match(/^\/issues\/([^/]+)\/activity\.ndjson$/);
+    if (req.method === 'GET' && issueActivityMatch) {
+      return handleGetIssueActivity(req, res, id, issueActivityMatch[1]);
+    }
   }
 
   if (req.method === 'GET' && url.pathname === '/favicon.ico') {
