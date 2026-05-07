@@ -97,6 +97,76 @@ test('2.4 — duplicate issue_register overwrites static fields, preserves dynam
   for (const k of STEP_KEYS) assert.equal(s.issues[0].steps[k], 'pending');
 });
 
+// ---- Phase 5 ----
+
+const setupOneIssueP5 = (extra = []) => [
+  init('wave'),
+  ev('wave_register',  { ts: TS(1), data: { wave_id: 'W1', name: 'S', layout: 'horizontal' } }),
+  ev('band_register',  { ts: TS(2), data: { wave_id: 'W1', band_id: 'W1.A', concurrency: 1 } }),
+  ev('issue_register', { ts: TS(3), data: { issue_id: 'W1.A.1', wave_id: 'W1', band_id: 'W1.A',
+                                              title: 'T', github: { repo: 'x/y', issue_num: 1 } } }),
+  ...extra,
+];
+
+test('5.1 — critical_path_update single-slot, last-write-wins; all-null clears', () => {
+  const s1 = project(setupOneIssueP5([
+    ev('critical_path_update', { ts: TS(4), data: { next_dispatch: 'A', blocking_issue: 'W1.A.1', blocking_pr: 1, eta: '5m' } }),
+  ]));
+  assert.equal(s1.critical_path.next_dispatch, 'A');
+  assert.equal(s1.critical_path.blocking_pr, 1);
+
+  const s2 = project(setupOneIssueP5([
+    ev('critical_path_update', { ts: TS(4), data: { next_dispatch: 'A', blocking_issue: 'W1.A.1', blocking_pr: 1 } }),
+    ev('critical_path_update', { ts: TS(5), data: { next_dispatch: 'B', blocking_issue: 'W1.A.1', blocking_pr: 2 } }),
+  ]));
+  assert.equal(s2.critical_path.next_dispatch, 'B');
+  assert.equal(s2.critical_path.blocking_pr, 2);
+
+  const s3 = project(setupOneIssueP5([
+    ev('critical_path_update', { ts: TS(4), data: { next_dispatch: 'A', blocking_issue: 'W1.A.1' } }),
+    ev('critical_path_update', { ts: TS(5), data: { next_dispatch: null, blocking_issue: null, blocking_pr: null, eta: null } }),
+  ]));
+  assert.equal(s3.critical_path, null);
+});
+
+test('5.2 — escalation_add upsert, escalation_clear no-op when absent', () => {
+  const s1 = project(setupOneIssueP5([
+    ev('escalation_add', { ts: TS(4), data: { issue_id: 'W1.A.1', reason: 'first', source: 'orchestrator' } }),
+    ev('escalation_add', { ts: TS(5), data: { issue_id: 'W1.A.1', reason: 'second', source: 'label' } }),
+  ]));
+  assert.equal(s1.escalations.length, 1);
+  assert.equal(s1.escalations[0].reason, 'second');
+  assert.equal(s1.escalations[0].source, 'label');
+
+  const s2 = project(setupOneIssueP5([
+    ev('escalation_clear', { ts: TS(4), data: { issue_id: 'never-existed' } }),
+  ]));
+  assert.equal(s2.escalations.length, 0);
+});
+
+test('5.3 — needs_human derived from escalations on each issue', () => {
+  const s = project(setupOneIssueP5([
+    ev('escalation_add', { ts: TS(4), data: { issue_id: 'W1.A.1', reason: 'r', source: 'label' } }),
+  ]));
+  const issue = s.issues.find((i) => i.issue_id === 'W1.A.1');
+  assert.equal(issue.needs_human, true);
+
+  const sCleared = project(setupOneIssueP5([
+    ev('escalation_add',   { ts: TS(4), data: { issue_id: 'W1.A.1', reason: 'r', source: 'label' } }),
+    ev('escalation_clear', { ts: TS(5), data: { issue_id: 'W1.A.1' } }),
+  ]));
+  assert.equal(sCleared.issues.find((i) => i.issue_id === 'W1.A.1').needs_human, false);
+});
+
+test('5.4 — escalation source preserved across all 3 source values', () => {
+  for (const source of ['label', 'orchestrator', 'heartbeat-cycles']) {
+    const s = project(setupOneIssueP5([
+      ev('escalation_add', { ts: TS(4), data: { issue_id: 'W1.A.1', reason: source, source } }),
+    ]));
+    assert.equal(s.escalations[0].source, source);
+  }
+});
+
 // ---- Phase 3 ----
 
 const setupOneIssue = (extra = []) => [

@@ -296,6 +296,7 @@ function project_wave(events) {
   const issuesMap = new Map();
   const escalationsMap = new Map();
   const feed = base.feed.slice();
+  let criticalPath = null;
 
   // Synthetic stages for issues — kept in a Map so issue_register can
   // upsert without disturbing v1's stage_register-derived stages.
@@ -468,10 +469,64 @@ function project_wave(events) {
         break;
       }
 
+      case 'critical_path_update': {
+        const data = e.data || {};
+        const allNull = (data.next_dispatch == null && data.blocking_issue == null
+                         && data.blocking_pr == null && data.eta == null);
+        criticalPath = allNull ? null : { ...data };
+        break;
+      }
+
+      case 'escalation_add': {
+        const data = e.data || {};
+        if (typeof data.issue_id !== 'string') {
+          pushWaveWarning(feed, e, 'escalation_add missing issue_id; dropped');
+          break;
+        }
+        escalationsMap.set(data.issue_id, {
+          issue_id: data.issue_id,
+          reason: data.reason || '',
+          source: data.source || 'orchestrator',
+        });
+        break;
+      }
+
+      case 'escalation_clear': {
+        const data = e.data || {};
+        if (typeof data.issue_id === 'string') {
+          escalationsMap.delete(data.issue_id);
+        }
+        break;
+      }
+
+      case 'github_state_set': {
+        const data = e.data || {};
+        if (typeof data.issue_id !== 'string') {
+          pushWaveWarning(feed, e, 'github_state_set missing issue_id; dropped');
+          break;
+        }
+        const issue = issuesMap.get(data.issue_id);
+        if (!issue) {
+          pushWaveWarning(feed, e, `github_state_set for unregistered issue ${data.issue_id}; dropped`);
+          break;
+        }
+        if (!issue.github) issue.github = {};
+        const { issue_id: _id, ...rest } = data;
+        Object.assign(issue.github, rest);
+        break;
+      }
+
       default:
         break;
     }
   }
+
+  // Compute summary + derive needs_human from escalations.
+  const issuesArr = Array.from(issuesMap.values());
+  for (const issue of issuesArr) {
+    issue.needs_human = escalationsMap.has(issue.issue_id);
+  }
+  const summary = computeWaveSummary(issuesArr, escalationsMap);
 
   return {
     ...base,
@@ -480,11 +535,25 @@ function project_wave(events) {
     meta: { ...base.meta, mode: 'wave' },
     waves: Array.from(wavesMap.values()),
     bands: Array.from(bandsMap.values()),
-    issues: Array.from(issuesMap.values()),
+    issues: issuesArr,
     escalations: Array.from(escalationsMap.values()),
-    critical_path: null,
-    summary: emptyWaveSummary(),
+    critical_path: criticalPath,
+    summary,
   };
+}
+
+function computeWaveSummary(issues, escalationsMap) {
+  let total = 0, done = 0, in_progress = 0, blocked = 0;
+  for (const issue of issues) {
+    if (!issue.steps) continue;
+    const cells = Object.values(issue.steps);
+    if (cells.every((v) => v === 'n/a')) continue;  // tracker — exclude from summary
+    total++;
+    if (cells.every((v) => v === 'done' || v === 'n/a')) done++;
+    else if (cells.some((v) => v === 'running')) in_progress++;
+    else if (cells.some((v) => v === 'failed')) blocked++;
+  }
+  return { total, done, in_progress, blocked, needs_human: escalationsMap.size };
 }
 
 function detectMode(events) {

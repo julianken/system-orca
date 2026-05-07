@@ -67,6 +67,69 @@ function nextBackoff(state, signal) {
   };
 }
 
+function isIssueDone(issue) {
+  if (!issue || !issue.steps) return false;
+  for (const k of Object.keys(issue.steps)) {
+    const v = issue.steps[k];
+    if (v !== 'done' && v !== 'n/a') return false;
+  }
+  return true;
+}
+
+function isTrackerIssue(issue) {
+  if (!issue || !issue.steps) return false;
+  return Object.values(issue.steps).every((v) => v === 'n/a');
+}
+
+function firstActiveStep(issue) {
+  const order = ['0_claim', '1_reconcile', '2_worktree', '3_implement', '4_gate',
+    '5_bot_review', '6_verdict', '7_mergify', '8_verify_merge', '9_cleanup'];
+  for (const k of order) {
+    const v = issue && issue.steps ? issue.steps[k] : 'pending';
+    if (v === 'pending' || v === 'running' || v === 'failed') return { step_key: k, status: v };
+  }
+  return null;
+}
+
+function compareIssueOrder(a, b) {
+  const wA = a.wave_id || '', wB = b.wave_id || '';
+  if (wA !== wB) return wA.localeCompare(wB);
+  const bA = a.band_id || '', bB = b.band_id || '';
+  if (bA !== bB) return bA.localeCompare(bB);
+  return (a.issue_id || '').localeCompare(b.issue_id || '');
+}
+
+function compute_critical_path(issues) {
+  const sorted = (issues || []).slice().sort(compareIssueOrder);
+  const live = sorted.filter((i) => !isTrackerIssue(i));
+  if (live.length === 0) {
+    return { next_dispatch: 'no live issues', blocking_issue: null, blocking_pr: null, eta: null };
+  }
+  if (live.every(isIssueDone)) {
+    return { next_dispatch: 'all issues done', blocking_issue: null, blocking_pr: null, eta: null };
+  }
+  const blocking = live.find((i) => !isIssueDone(i));
+  const step = firstActiveStep(blocking);
+  const stepName = step ? step.step_key : 'unknown';
+  const stepStatus = step ? step.status : 'pending';
+  const pr = (blocking.github && blocking.github.pr_num) || null;
+  return {
+    next_dispatch: `${stepStatus} ${stepName} on ${blocking.issue_id} — ${blocking.title || ''}`.trim(),
+    blocking_issue: blocking.issue_id,
+    blocking_pr: pr,
+    eta: null,
+  };
+}
+
+function criticalPathEqual(a, b) {
+  if (a == null && b == null) return true;
+  if (a == null || b == null) return false;
+  return a.next_dispatch === b.next_dispatch
+      && a.blocking_issue === b.blocking_issue
+      && a.blocking_pr === b.blocking_pr
+      && (a.eta || null) === (b.eta || null);
+}
+
 // ---- runtime entry point ----
 
 const NAME = 'system-orca';
@@ -198,6 +261,53 @@ async function tickOnce(ctx) {
       stage_id: issue.issue_id,
       data: githubState,
     });
+
+    // needs:human label diff → escalation_add / escalation_clear
+    const prevLabels = ctx.lastLabels.get(issue.issue_id) || [];
+    const diff = computeLabelDiff(prevLabels, labels);
+    if (diff.added.includes('needs:human')) {
+      await postEvent({
+        workflow_id: ctx.workflow,
+        type: 'escalation_add',
+        agent: 'heartbeat',
+        stage_id: issue.issue_id,
+        data: { issue_id: issue.issue_id, reason: 'needs:human label set', source: 'label' },
+      });
+    }
+    if (diff.removed.includes('needs:human')) {
+      await postEvent({
+        workflow_id: ctx.workflow,
+        type: 'escalation_clear',
+        agent: 'heartbeat',
+        stage_id: issue.issue_id,
+        data: { issue_id: issue.issue_id, reason: 'needs:human label removed' },
+      });
+    }
+    ctx.lastLabels.set(issue.issue_id, labels);
+
+    // cycle-threshold escalation (real event, not just projection-level synthesis)
+    if (issue.review_cycles >= 5 && !ctx.escalatedCycles.has(issue.issue_id)) {
+      ctx.escalatedCycles.add(issue.issue_id);
+      await postEvent({
+        workflow_id: ctx.workflow,
+        type: 'escalation_add',
+        agent: 'heartbeat',
+        stage_id: issue.issue_id,
+        data: { issue_id: issue.issue_id, reason: 'review_cycles_exhausted', source: 'heartbeat-cycles' },
+      });
+    }
+  }
+
+  // Critical path
+  const cp = compute_critical_path(issues);
+  if (!criticalPathEqual(cp, ctx.lastCriticalPath)) {
+    ctx.lastCriticalPath = cp;
+    await postEvent({
+      workflow_id: ctx.workflow,
+      type: 'critical_path_update',
+      agent: 'heartbeat',
+      data: cp,
+    });
   }
 
   return { ok: !anyError, rateLimited };
@@ -268,7 +378,12 @@ async function main() {
   process.on('SIGTERM', cleanup);
   process.on('SIGINT', cleanup);
 
-  const ctx = { workflow, mode, repo, state };
+  const ctx = {
+    workflow, mode, repo, state,
+    lastLabels: new Map(),
+    escalatedCycles: new Set(),
+    lastCriticalPath: null,
+  };
   await postEvent({
     workflow_id: workflow,
     type: 'note',
@@ -311,4 +426,7 @@ if (require.main === module) {
   });
 }
 
-module.exports = { normalizeVerdict, parseReviewCycles, computeLabelDiff, nextBackoff };
+module.exports = {
+  normalizeVerdict, parseReviewCycles, computeLabelDiff, nextBackoff,
+  compute_critical_path, criticalPathEqual, isIssueDone, isTrackerIssue,
+};
