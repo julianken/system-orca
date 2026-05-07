@@ -17,6 +17,10 @@ yarn.lock
 server.pid
 server.log
 *.jsonl
+# Test fixtures under tests/ are tracked even though they look like
+# events.jsonl. The rule above guards runtime artefacts; this exemption
+# lets us check in deterministic replay inputs.
+!tests/**/*.jsonl
 
 # OS
 Thumbs.db
