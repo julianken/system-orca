@@ -170,6 +170,36 @@ test('second plan_declared is additive merge', () => {
   assert.equal(byId['2'].status, 'pending');
 });
 
+test('workflow_fail flips meta.status and tags subsequent feed entries post_mortem', () => {
+  const s = project([
+    ev('workflow_init', { ts: TS(0), data: { title: 'T', goal: 'G' } }),
+    ev('workflow_fail',  { ts: TS(3), data: { summary: 'crashed', error: 'oom', verdict: 'FAIL' } }),
+    ev('note',           { ts: TS(4), data: { text: 'after', level: 'info' } }),
+  ]);
+  assert.equal(s.meta.status, 'failed');
+  assert.equal(s.meta.failed_at, TS(3));
+  assert.equal(s.meta.failure.error, 'oom');
+  assert.equal(s.meta.failure.verdict, 'FAIL');
+  const noteEntry = s.feed.find((f) => f.type === 'note' && f.text === 'after');
+  assert.equal(noteEntry.post_mortem, true);
+});
+
+test('workflow_complete after workflow_fail recovers; clears post_mortem flag', () => {
+  const s = project([
+    ev('workflow_init',     { ts: TS(0), data: { title: 'T', goal: 'G' } }),
+    ev('workflow_fail',     { ts: TS(2), data: { summary: 'oops', verdict: 'COURSE_CORRECT' } }),
+    ev('note',              { ts: TS(3), data: { text: 'during-fail' } }),
+    ev('workflow_complete', { ts: TS(4), data: { summary: 'recovered' } }),
+    ev('note',              { ts: TS(5), data: { text: 'after-recover' } }),
+  ]);
+  assert.equal(s.meta.status, 'completed');
+  assert.equal(s.meta.summary, 'recovered');
+  const duringFail = s.feed.find((f) => f.type === 'note' && f.text === 'during-fail');
+  const afterRecover = s.feed.find((f) => f.type === 'note' && f.text === 'after-recover');
+  assert.equal(duringFail.post_mortem, true);
+  assert.equal(afterRecover.post_mortem, undefined);
+});
+
 test('double stage_complete is no-op with warning', () => {
   const s = project([
     ev('stage_register', { data: { id: '1' } }),

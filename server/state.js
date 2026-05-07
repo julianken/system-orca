@@ -41,7 +41,7 @@ function unblockDependents(stages) {
   }
 }
 
-function feedEntry(e) {
+function feedEntry(e, post_mortem) {
   const entry = {
     ts: e.ts,
     agent: e.agent,
@@ -54,6 +54,7 @@ function feedEntry(e) {
     if (typeof d.level === 'string') entry.level = d.level;
     if (typeof d.text === 'string') entry.text = d.text;
   }
+  if (post_mortem) entry.post_mortem = true;
   return entry;
 }
 
@@ -80,13 +81,14 @@ function registerStage(stages, def) {
   }
 }
 
-function project(events) {
+function project_base(events) {
   let meta = {};
   const stages = new Map();
   const feed = [];
+  let post_mortem = false;
 
   for (const e of events) {
-    feed.push(feedEntry(e));
+    feed.push(feedEntry(e, post_mortem));
 
     switch (e.type) {
       case 'workflow_init': {
@@ -100,6 +102,7 @@ function project(events) {
           archived: false,
           artifact_root: data.artifact_root || null,
         };
+        if (data.mode === 'wave') meta.mode = 'wave';
         break;
       }
 
@@ -108,6 +111,15 @@ function project(events) {
         if (e.data && typeof e.data.summary === 'string') {
           meta.summary = e.data.summary;
         }
+        post_mortem = false;
+        break;
+      }
+
+      case 'workflow_fail': {
+        meta.status = 'failed';
+        meta.failed_at = e.ts;
+        meta.failure = { ...(e.data || {}) };
+        post_mortem = true;
         break;
       }
 
@@ -190,6 +202,38 @@ function project(events) {
   };
 }
 
+function emptyWaveSummary() {
+  return { total: 0, done: 0, in_progress: 0, blocked: 0, needs_human: 0 };
+}
+
+function project_wave(events) {
+  const base = project_base(events);
+  return {
+    ...base,
+    meta: { ...base.meta, mode: 'wave' },
+    waves: [],
+    bands: [],
+    issues: [],
+    escalations: [],
+    critical_path: null,
+    summary: emptyWaveSummary(),
+  };
+}
+
+function detectMode(events) {
+  for (const e of events) {
+    if (e && e.type === 'workflow_init') {
+      const m = e.data && e.data.mode;
+      return typeof m === 'string' ? m : null;
+    }
+  }
+  return null;
+}
+
+function project(events) {
+  return detectMode(events) === 'wave' ? project_wave(events) : project_base(events);
+}
+
 function readEventsFromFile(filePath) {
   let raw;
   try { raw = fs.readFileSync(filePath, 'utf8'); }
@@ -214,4 +258,4 @@ function readEventsFromFile(filePath) {
   return events;
 }
 
-module.exports = { project, readEventsFromFile, deriveStatus };
+module.exports = { project, project_base, project_wave, detectMode, readEventsFromFile, deriveStatus };
