@@ -146,6 +146,9 @@
       overflow: auto;
       text-align: center;
     }
+    /* mermaid.initialize uses flowchart.useMaxWidth:false so the SVG
+       renders at its natural pixel size; pre.mermaid (overflow:auto)
+       scrolls horizontally for diagrams wider than the viewport. */
 
     /* Status icons + animations on mermaid nodes. Mermaid puts classDef names
        as CSS classes on the <g class="node default running ..."> wrapper; we
