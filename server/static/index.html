@@ -2,11 +2,115 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>system-orca</title>
+  <style>
+    :root {
+      --bg: #09090b;
+      --bg-elev: #18181b;
+      --bg-elev-2: #27272a;
+      --border: #3f3f46;
+      --text: #fafafa;
+      --text-2: #a1a1aa;
+      --accent: #84cc16;
+      --ok: #22c55e;
+      --err: #ef4444;
+      --warn: #f59e0b;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      margin: 0;
+      min-height: 100vh;
+    }
+    a { color: inherit; text-decoration: none; }
+    header {
+      padding: 24px 32px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      flex-wrap: wrap;
+    }
+    header h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
+    .counts { color: var(--text-2); font-size: 14px; }
+    .counts strong { color: var(--text); font-weight: 500; }
+    .toggle { margin-left: auto; display: flex; align-items: center; gap: 8px; color: var(--text-2); font-size: 13px; }
+    main { padding: 24px 32px; }
+    #cards {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+    }
+    .card {
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      cursor: pointer;
+      transition: border-color 120ms, transform 120ms;
+      display: block;
+    }
+    .card:hover { border-color: var(--accent); transform: translateY(-1px); }
+    .card[data-archived="true"] { opacity: 0.55; }
+    .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 6px;
+    }
+    .card-title { font-weight: 500; font-size: 15px; }
+    .card-goal { color: var(--text-2); font-size: 13px; line-height: 1.4; margin-bottom: 12px; }
+    .card-meta { display: flex; gap: 16px; color: var(--text-2); font-size: 12px; }
+    .card-meta strong { color: var(--text); font-weight: 500; }
+
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: lowercase;
+      letter-spacing: 0.02em;
+      border: 1px solid transparent;
+    }
+    .pill-pending   { background: var(--bg-elev-2); color: var(--text-2); }
+    .pill-running   { background: var(--accent); color: #000; animation: pulse 1.6s ease-in-out infinite; }
+    .pill-completed { background: var(--ok); color: #000; }
+    .pill-failed    { background: var(--err); color: #fff; }
+    .pill-archived  { background: var(--bg-elev-2); color: var(--text-2); border-color: var(--border); }
+
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(132, 204, 22, 0.6); }
+      50%      { box-shadow: 0 0 0 6px rgba(132, 204, 22, 0); }
+    }
+
+    .empty {
+      color: var(--text-2);
+      text-align: center;
+      padding: 40px;
+      grid-column: 1 / -1;
+    }
+  </style>
 </head>
 <body>
-  <h1>system-orca</h1>
-  <p>placeholder — cards index lands in phase 5</p>
-  <script src="/static/app.js"></script>
+  <header>
+    <h1>system-orca</h1>
+    <div class="counts" id="counts">
+      <strong id="count-running">0</strong> running ·
+      <strong id="count-completed">0</strong> completed
+    </div>
+    <label class="toggle">
+      <input id="show-archived" type="checkbox">
+      show archived
+    </label>
+  </header>
+  <main>
+    <div id="cards" role="list"></div>
+  </main>
+  <script type="module" src="/static/app.js"></script>
 </body>
 </html>
