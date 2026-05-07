@@ -381,6 +381,11 @@ function handle(req, res) {
     if (req.method === 'POST' && sub === '/archive') return handleArchive(req, res, id);
   }
 
+  if (req.method === 'GET' && url.pathname === '/favicon.ico') {
+    res.writeHead(204);
+    return res.end();
+  }
+
   if (req.method === 'GET' && url.pathname === '/') {
     return serveStatic(res, 'index.html');
   }
