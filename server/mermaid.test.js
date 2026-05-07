@@ -23,12 +23,21 @@ test('two-stage chain emits the right edge', () => {
   assert.match(out, /2\["B: two"\]:::pending/);
 });
 
-test('critic stage gets :::critic regardless of status', () => {
+test('critic stage gets :::critic + secondary status class for status-based CSS', () => {
   const out = stateToMermaid({ stages: [
     { id: 'c1', label: 'crit', name: 'review', type: 'critic', status: 'completed' },
   ]});
   assert.match(out, /c1\["crit: review"\]:::critic/);
-  assert.doesNotMatch(out, /c1\["crit: review"\]:::completed/);
+  assert.doesNotMatch(out, /:::completed/);
+  assert.match(out, /class c1 completed/);
+});
+
+test('running critic gets both critic and running classes', () => {
+  const out = stateToMermaid({ stages: [
+    { id: 'cr', label: 'critic', name: 'live', type: 'critic', status: 'running' },
+  ]});
+  assert.match(out, /cr\["critic: live"\]:::critic/);
+  assert.match(out, /class cr running/);
 });
 
 test('parent + two children produces a subgraph', () => {
@@ -43,15 +52,24 @@ test('parent + two children produces a subgraph', () => {
   assert.match(out, /\n {2}end/);
 });
 
-test('include_status:false omits status suffix', () => {
+test('non-critic stages emit no secondary class statement', () => {
+  const out = stateToMermaid({ stages: [
+    { id: '1', label: 'A', name: 'one', status: 'running' },
+  ]});
+  assert.match(out, /1\["A: one"\]:::running/);
+  assert.doesNotMatch(out, /class 1 running/);
+});
+
+test('include_status:false omits ::: suffix and secondary class', () => {
   const out = stateToMermaid(
     { stages: [
       { id: '1', label: 'A', name: 'one', status: 'completed' },
-      { id: '2', label: 'B', name: 'two', status: 'pending', blocked_by: ['1'] },
+      { id: 'c', label: 'C', name: 'crit', type: 'critic', status: 'running' },
     ]},
     { include_status: false },
   );
   assert.doesNotMatch(out, /:::/);
+  assert.doesNotMatch(out, /^\s*class /m);
   assert.match(out, /1\["A: one"\]/);
 });
 

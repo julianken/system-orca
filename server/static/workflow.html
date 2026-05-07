@@ -147,6 +147,49 @@
       text-align: center;
     }
 
+    /* Status icons + animations on mermaid nodes. Mermaid puts classDef names
+       as CSS classes on the <g class="node default running ..."> wrapper; we
+       inject the status glyph via ::before on the inner .nodeLabel span (which
+       gets measured by mermaid for layout, so the rect sizes correctly). */
+    @keyframes mermaid-running-pulse {
+      0%, 100% { stroke-width: 4px;  filter: drop-shadow(0 0 0  rgba(132, 204, 22, 0.9)); }
+      50%      { stroke-width: 10px; filter: drop-shadow(0 0 14px rgba(132, 204, 22, 0.9)); }
+    }
+    #diagram-target svg g.node.running rect,
+    #diagram-target svg g.node.running polygon,
+    #diagram-target svg g.node.running circle,
+    #diagram-target svg g.node.running ellipse,
+    #diagram-target svg g.node.running path {
+      animation: mermaid-running-pulse 1.6s ease-in-out infinite;
+    }
+
+    @keyframes mermaid-spinner {
+      from { transform: rotate(0deg); }
+      to   { transform: rotate(360deg); }
+    }
+    #diagram-target svg .nodeLabel { display: inline-block; }
+    #diagram-target svg .nodeLabel::before {
+      display: inline-block;
+      margin-right: 0.4em;
+      transform-origin: 50% 55%;
+    }
+    #diagram-target svg g.node.pending   .nodeLabel::before { content: "○"; }
+    #diagram-target svg g.node.blocked   .nodeLabel::before { content: "⊘"; }
+    #diagram-target svg g.node.completed .nodeLabel::before { content: "✓"; }
+    #diagram-target svg g.node.failed    .nodeLabel::before { content: "✗"; }
+    #diagram-target svg g.node.running   .nodeLabel::before {
+      content: "⟳";
+      animation: mermaid-spinner 1.4s linear infinite;
+    }
+    /* Critic-running gets both classes; .running specificity is equal so the
+       spinner content overrides the static critic glyph. We still set a critic
+       fallback for completeness. */
+    #diagram-target svg g.node.critic    .nodeLabel::before { content: "◆"; }
+    #diagram-target svg g.node.critic.running .nodeLabel::before {
+      content: "⟳";
+      animation: mermaid-spinner 1.4s linear infinite;
+    }
+
     section#feed {
       margin-top: 32px;
       border-top: 1px solid var(--border);
