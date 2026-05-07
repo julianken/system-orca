@@ -97,6 +97,100 @@ test('2.4 — duplicate issue_register overwrites static fields, preserves dynam
   for (const k of STEP_KEYS) assert.equal(s.issues[0].steps[k], 'pending');
 });
 
+// ---- Phase 3 ----
+
+const setupOneIssue = (extra = []) => [
+  init('wave'),
+  ev('wave_register',  { ts: TS(1), data: { wave_id: 'W1', name: 'S', layout: 'horizontal' } }),
+  ev('band_register',  { ts: TS(2), data: { wave_id: 'W1', band_id: 'W1.A', concurrency: 2 } }),
+  ev('issue_register', { ts: TS(3), data: { issue_id: 'W1.A.1', wave_id: 'W1', band_id: 'W1.A',
+                                              title: 'T', github: { repo: 'x/y', issue_num: 1 } } }),
+  ...extra,
+];
+
+test('3.1 — step_set happy path mutates one cell + mirrors to feed', () => {
+  const s = project(setupOneIssue([
+    ev('step_set', { ts: TS(4), agent: 'impl', data: { issue_id: 'W1.A.1', step_key: '3_implement', status: 'running' } }),
+  ]));
+  assert.equal(s.issues[0].steps['3_implement'], 'running');
+  assert.equal(s.issues[0].steps['0_claim'], 'pending');  // unaffected
+  const mirror = s.feed.find((f) => f.type === 'stage_update' && f.stage_id === 'W1.A.1' && f.summary === 'step 3_implement: running');
+  assert.ok(mirror, 'expected step_set to mirror as a stage_update feed entry');
+});
+
+test('3.2 — review_cycle REQUEST_CHANGES resets steps 3-6, increments review_cycles, leaves 0-2 + 7-9 alone', () => {
+  const events = setupOneIssue([
+    ev('step_set',     { ts: TS(4), agent: 'orchestrator', data: { issue_id: 'W1.A.1', step_key: '0_claim',     status: 'done' } }),
+    ev('step_set',     { ts: TS(5), agent: 'impl',         data: { issue_id: 'W1.A.1', step_key: '1_reconcile', status: 'done' } }),
+    ev('step_set',     { ts: TS(6), agent: 'impl',         data: { issue_id: 'W1.A.1', step_key: '2_worktree',  status: 'done' } }),
+    ev('step_set',     { ts: TS(7), agent: 'impl',         data: { issue_id: 'W1.A.1', step_key: '3_implement', status: 'done' } }),
+    ev('step_set',     { ts: TS(8), agent: 'impl',         data: { issue_id: 'W1.A.1', step_key: '4_gate',      status: 'done' } }),
+    ev('step_set',     { ts: TS(9), agent: 'bot',          data: { issue_id: 'W1.A.1', step_key: '5_bot_review',status: 'done' } }),
+    ev('review_cycle', { ts: '2026-05-07T00:00:10.000Z', agent: 'bot', data: { issue_id: 'W1.A.1', cycle_n: 1, verdict: 'REQUEST_CHANGES' } }),
+  ]);
+  const s = project(events);
+  const issue = s.issues[0];
+  assert.equal(issue.review_cycles, 1);
+  // Reset block 3-6
+  for (const k of ['3_implement', '4_gate', '5_bot_review', '6_verdict']) {
+    assert.equal(issue.steps[k], 'pending', `${k} should reset on REQUEST_CHANGES`);
+  }
+  // Cells 0-2 stay done
+  for (const k of ['0_claim', '1_reconcile', '2_worktree']) {
+    assert.equal(issue.steps[k], 'done', `${k} should stay done after loop-back`);
+  }
+  // Cells 7-9 untouched (still pending from initial seed)
+  for (const k of ['7_mergify', '8_verify_merge', '9_cleanup']) {
+    assert.equal(issue.steps[k], 'pending', `${k} should stay pending`);
+  }
+  const loopback = s.feed.find((f) => f.type === 'note' && /loop-back/.test(f.text || ''));
+  assert.ok(loopback, 'expected loop-back feed entry');
+});
+
+test('3.3 — cycle thresholds: warn at >=3, escalation at >=5', () => {
+  const events = setupOneIssue([
+    ev('review_cycle', { ts: TS(4), agent: 'bot', data: { issue_id: 'W1.A.1', cycle_n: 3, verdict: 'REQUEST_CHANGES' } }),
+  ]);
+  const s3 = project(events);
+  assert.equal(s3.issues[0].review_cycles, 3);
+  const warn3 = s3.feed.find((f) => f.type === 'note' && f.level === 'warn' && /review_cycles=3/.test(f.text || ''));
+  assert.ok(warn3, 'expected warn note at cycles >=3');
+  assert.equal(s3.escalations.length, 0);
+
+  const eventsHigh = setupOneIssue([
+    ev('review_cycle', { ts: TS(4), agent: 'bot', data: { issue_id: 'W1.A.1', cycle_n: 5, verdict: 'REQUEST_CHANGES' } }),
+  ]);
+  const s5 = project(eventsHigh);
+  assert.equal(s5.escalations.length, 1);
+  assert.equal(s5.escalations[0].issue_id, 'W1.A.1');
+  assert.equal(s5.escalations[0].reason, 'review_cycles_exhausted');
+  assert.equal(s5.escalations[0].source, 'heartbeat-cycles');
+});
+
+test('3.4 — step_set rejected when target cell is n/a (tracker)', () => {
+  const s = project([
+    init('wave'),
+    ev('wave_register',  { data: { wave_id: 'W1', name: 'X', layout: 'horizontal' } }),
+    ev('band_register',  { data: { wave_id: 'W1', band_id: 'W1.T', concurrency: 0 } }),
+    ev('issue_register', { data: { issue_id: 'W1.T.x', wave_id: 'W1', band_id: 'W1.T', title: 't',
+                                    github: { repo: 'x/y', issue_num: 99 } } }),
+    ev('step_set', { agent: 'impl', data: { issue_id: 'W1.T.x', step_key: '3_implement', status: 'running' } }),
+  ]);
+  assert.equal(s.issues[0].steps['3_implement'], 'n/a');
+  const warn = s.feed.find((f) => f.type === 'note' && /n\/a \(tracker band\)/.test(f.text || ''));
+  assert.ok(warn, 'expected tracker-reject warning');
+});
+
+test('3.5 — emitter mismatch on step_set warns but still mutates the cell', () => {
+  // 5_bot_review expects bot|heartbeat; sending it as 'impl' should warn.
+  const s = project(setupOneIssue([
+    ev('step_set', { ts: TS(4), agent: 'impl', data: { issue_id: 'W1.A.1', step_key: '5_bot_review', status: 'done' } }),
+  ]));
+  assert.equal(s.issues[0].steps['5_bot_review'], 'done');  // mutation lands
+  const warn = s.feed.find((f) => f.type === 'note' && /emitted by 'impl' \(expected: bot/.test(f.text || ''));
+  assert.ok(warn, 'expected emitter-mismatch warning');
+});
+
 test('2.5 — wave events on base-mode workflow: project_base ignores them, no wave fields leak', () => {
   const events = [
     init(),

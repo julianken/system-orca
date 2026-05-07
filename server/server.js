@@ -43,12 +43,22 @@ const EVENT_TYPES = new Set([
   'note',
   // v2-applicable in v1 base
   'workflow_fail',
-  // v2 wave-mode (Phase 2 ingest; later phases add step_set, review_cycle,
-  // github_state_set, critical_path_update, escalation_add, escalation_clear)
+  // v2 wave-mode (Phase 2 ingest; later phases add github_state_set,
+  // critical_path_update, escalation_add, escalation_clear)
   'wave_register',
   'band_register',
   'issue_register',
+  // v2 wave-mode Phase 3
+  'step_set',
+  'review_cycle',
 ]);
+
+const STEP_KEY_ENUM = new Set([
+  '0_claim', '1_reconcile', '2_worktree', '3_implement', '4_gate',
+  '5_bot_review', '6_verdict', '7_mergify', '8_verify_merge', '9_cleanup',
+]);
+const STEP_STATUS_ENUM = new Set(['pending', 'running', 'done', 'failed']);
+const REVIEW_VERDICT_ENUM = new Set(['APPROVE', 'REQUEST_CHANGES', 'COMMENT']);
 
 const WORKFLOW_ID_RE = /^[a-z0-9_-]{1,64}$/;
 const BODY_CAP_BYTES = 1024 * 1024;
@@ -144,6 +154,18 @@ function validateEvent(body) {
     if (body.data.mode !== 'wave') {
       return `unknown mode '${body.data.mode}' — supported: "wave" or omitted`;
     }
+  }
+  if (body.type === 'step_set') {
+    const d = body.data || {};
+    if (typeof d.issue_id !== 'string') return 'step_set requires data.issue_id';
+    if (!STEP_KEY_ENUM.has(d.step_key)) return `unknown step_key for mode:wave: '${d.step_key}'`;
+    if (!STEP_STATUS_ENUM.has(d.status)) return `unknown step_set status '${d.status}' (n/a is set only by issue_register)`;
+  }
+  if (body.type === 'review_cycle') {
+    const d = body.data || {};
+    if (typeof d.issue_id !== 'string') return 'review_cycle requires data.issue_id';
+    if (typeof d.cycle_n !== 'number') return 'review_cycle requires numeric data.cycle_n';
+    if (!REVIEW_VERDICT_ENUM.has(d.verdict)) return `unknown review_cycle verdict '${d.verdict}'`;
   }
   return null;
 }
