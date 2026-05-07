@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
+const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { parseArgs } = require('node:util');
 
@@ -23,13 +24,15 @@ function usage() {
   return [
     `usage: ${NAME} <subcommand> [args]`,
     '',
-    'phase-1 subcommands:',
+    'subcommands:',
     '  up      start the local dashboard server (idempotent)',
     '  down    stop the local dashboard server (idempotent)',
     '  status  print server liveness + workflow counts',
+    '  init    --title T --goal G [--id wf_…]  create a workflow',
+    '  event   --workflow ID --type T [--stage-id S] [--data JSON|@file]',
     '',
-    'phase-2+ subcommands (not yet implemented):',
-    '  init, event, archive, list, tail',
+    'phase-3+ subcommands (not yet implemented):',
+    '  archive, list, tail',
     '',
     `runtime root: ${HOME}`,
     `server URL:   ${URL_BASE}`,
@@ -75,6 +78,29 @@ function getJson(pathname, timeoutMs) {
     });
     req.on('error', () => resolve(null));
     if (timeoutMs) req.setTimeout(timeoutMs, () => req.destroy());
+    req.end();
+  });
+}
+
+function postJson(pathname, payload, timeoutMs) {
+  return new Promise((resolve) => {
+    const buf = Buffer.from(JSON.stringify(payload));
+    const req = http.request({
+      host: HOST, port: PORT, path: pathname, method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': buf.length },
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
+        let json = null;
+        try { json = JSON.parse(body); } catch { /* leave null */ }
+        resolve({ status: res.statusCode, body, json });
+      });
+    });
+    req.on('error', () => resolve(null));
+    if (timeoutMs) req.setTimeout(timeoutMs, () => req.destroy());
+    req.write(buf);
     req.end();
   });
 }
@@ -228,6 +254,114 @@ function notImplemented(name) {
   return 2;
 }
 
+function todayIso() {
+  const d = new Date();
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function generateWorkflowId() {
+  return `wf_${todayIso()}_${crypto.randomBytes(2).toString('hex')}`;
+}
+
+function parseDataArg(value) {
+  if (value == null) return undefined;
+  if (typeof value !== 'string') return undefined;
+  const raw = value.startsWith('@')
+    ? fs.readFileSync(value.slice(1), 'utf8')
+    : value;
+  return JSON.parse(raw);
+}
+
+function describePostFailure(r) {
+  if (!r) return 'no response (is the server up? try `system-orca up`)';
+  const detail = r.json && r.json.error
+    ? `${r.json.error.code}: ${r.json.error.message}`
+    : (r.body || '').slice(0, 200);
+  return `HTTP ${r.status} — ${detail}`;
+}
+
+async function init(rest) {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: rest,
+      options: {
+        title: { type: 'string' },
+        goal:  { type: 'string' },
+        id:    { type: 'string' },
+      },
+      allowPositionals: false,
+    });
+  } catch (err) {
+    process.stderr.write(`error: ${err.message}\n`);
+    return 1;
+  }
+  const { title, goal, id: idOverride } = parsed.values;
+  if (!title || !goal) {
+    process.stderr.write('error: --title and --goal are required\n');
+    return 1;
+  }
+  const id = idOverride || generateWorkflowId();
+  const r = await postJson('/api/events', {
+    workflow_id: id,
+    type: 'workflow_init',
+    agent: process.env.SYSTEM_ORCA_AGENT || 'orchestrator',
+    data: { title, goal },
+  }, 5000);
+  if (!r || r.status !== 200) {
+    process.stderr.write(`error: workflow_init failed — ${describePostFailure(r)}\n`);
+    return 1;
+  }
+  process.stdout.write(`${id}\n${URL_BASE}/w/${id}\n`);
+  return 0;
+}
+
+async function event(rest) {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: rest,
+      options: {
+        workflow:   { type: 'string' },
+        type:       { type: 'string' },
+        'stage-id': { type: 'string' },
+        data:       { type: 'string' },
+      },
+      allowPositionals: false,
+    });
+  } catch (err) {
+    process.stderr.write(`error: ${err.message}\n`);
+    return 1;
+  }
+  const v = parsed.values;
+  if (!v.workflow || !v.type) {
+    process.stderr.write('error: --workflow and --type are required\n');
+    return 1;
+  }
+  let data;
+  try { data = parseDataArg(v.data); }
+  catch (err) {
+    process.stderr.write(`error: --data is not valid JSON: ${err.message}\n`);
+    return 1;
+  }
+  const envelope = {
+    workflow_id: v.workflow,
+    type: v.type,
+    agent: process.env.SYSTEM_ORCA_AGENT || 'orchestrator',
+  };
+  if (v['stage-id']) envelope.stage_id = v['stage-id'];
+  if (data !== undefined) envelope.data = data;
+  const r = await postJson('/api/events', envelope, 5000);
+  if (!r || r.status !== 200) {
+    process.stderr.write(`error: event failed — ${describePostFailure(r)}\n`);
+    return 1;
+  }
+  return 0;
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   if (argv.length === 0 || argv[0] === '-h' || argv[0] === '--help') {
@@ -238,13 +372,6 @@ async function main() {
   const sub = argv[0];
   const rest = argv.slice(1);
 
-  try {
-    parseArgs({ args: rest, options: {}, allowPositionals: true, tokens: true });
-  } catch (err) {
-    process.stderr.write(`error: ${err.message}\n`);
-    return 1;
-  }
-
   if (!SUBCOMMANDS.includes(sub)) {
     process.stderr.write(`error: unknown subcommand '${sub}'\n\n${usage()}`);
     return 1;
@@ -254,6 +381,8 @@ async function main() {
     case 'up':     return up();
     case 'down':   return down();
     case 'status': return status();
+    case 'init':   return init(rest);
+    case 'event':  return event(rest);
     default:       return notImplemented(sub);
   }
 }
