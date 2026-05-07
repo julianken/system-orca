@@ -424,7 +424,8 @@ async function handleListWorkflows(req, res, url) {
 
     const projected = project(events);
     const lastEvent = events.length ? events[events.length - 1] : null;
-    summaries.push({
+    const isWave = meta.mode === 'wave';
+    const summary = {
       id: meta.id || id,
       title: meta.title || '',
       goal: meta.goal || '',
@@ -434,7 +435,14 @@ async function handleListWorkflows(req, res, url) {
       stage_count: projected.stages.length,
       completed_count: projected.stages.filter((s) => s.status === 'completed').length,
       archived: !!meta.archived,
-    });
+    };
+    if (isWave) {
+      summary.mode = 'wave';
+      summary.wave_count = (projected.waves || []).length;
+      summary.issue_count = (projected.issues || []).length;
+      summary.done_issue_count = (projected.summary && projected.summary.done) || 0;
+    }
+    summaries.push(summary);
   }
 
   summaries.sort((a, b) => (b.last_event_at || '').localeCompare(a.last_event_at || ''));
@@ -458,7 +466,7 @@ async function handleArchive(req, res, id) {
   return jsonResponse(res, 200, { id, archived: true });
 }
 
-function handle(req, res) {
+async function handle(req, res) {
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
   const route = `${req.method} ${url.pathname}`;
 
@@ -511,6 +519,26 @@ function handle(req, res) {
     return serveStatic(res, 'index.html');
   }
 
+  // Wave-mode: /w/<id>/issue/<issue_id> → issue-detail.html
+  const issueDetailMatch = url.pathname.match(/^\/w\/([^/]+)\/issue\/([^/]+)\/?$/);
+  if (req.method === 'GET' && issueDetailMatch) {
+    return serveStatic(res, 'issue-detail.html');
+  }
+
+  // /w/<id> dispatch by meta.mode (workflow.html for base, workflow-wave.html for wave)
+  const wfPageMatch = url.pathname.match(/^\/w\/([^/]+)\/?$/);
+  if (req.method === 'GET' && wfPageMatch) {
+    const id = wfPageMatch[1];
+    let template = 'workflow.html';
+    if (WORKFLOW_ID_RE.test(id)) {
+      try {
+        const meta = await readMeta(id);
+        if (meta && meta.mode === 'wave') template = 'workflow-wave.html';
+      } catch { /* fall through to base template */ }
+    }
+    return serveStatic(res, template);
+  }
+
   if (req.method === 'GET' && url.pathname.startsWith('/w/')) {
     return serveStatic(res, 'workflow.html');
   }
@@ -544,7 +572,15 @@ process.on('uncaughtException', (err) => {
   shutdown('uncaughtException');
 });
 
-const server = http.createServer(handle);
+const server = http.createServer((req, res) => {
+  Promise.resolve(handle(req, res)).catch((err) => {
+    process.stderr.write(`request error: ${err && err.stack || err}\n`);
+    if (!res.headersSent) {
+      try { jsonError(res, 500, 'internal_error', 'unexpected server error'); }
+      catch { /* socket may already be closed */ }
+    }
+  });
+});
 server.listen(PORT, HOST, () => {
   writePidFile();
   process.stdout.write(`listening on http://${HOST}:${PORT}\n`);

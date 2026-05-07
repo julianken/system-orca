@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>system-orca — issue</title>
+  <style>
+    :root {
+      --bg: #09090b; --bg-elev: #18181b; --bg-elev-2: #27272a;
+      --border: #3f3f46; --text: #fafafa; --text-2: #a1a1aa;
+      --accent: #84cc16; --ok: #22c55e; --err: #ef4444; --warn: #f59e0b;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      background: var(--bg); color: var(--text); margin: 0; min-height: 100vh;
+      font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+    }
+    a { color: inherit; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    header.issue-head { padding: 24px 32px; border-bottom: 1px solid var(--border); }
+    .breadcrumb { font-size: 12px; color: var(--text-2); margin-bottom: 8px; }
+    h1#issue-title { margin: 0; font-size: 22px; font-weight: 600; }
+    .issue-meta { display: flex; gap: 16px; color: var(--text-2); font-size: 12px; flex-wrap: wrap; margin-top: 8px; }
+    .gh-state-pill {
+      padding: 2px 8px; border-radius: 999px; background: var(--bg-elev-2);
+      color: var(--text-2); font-size: 11px;
+    }
+    .gh-state-pill[data-state="OPEN"] { background: var(--accent); color: #000; }
+    .gh-state-pill[data-state="CLOSED"] { background: var(--err); color: #fff; }
+
+    main { padding: 24px 32px; }
+    section { margin-bottom: 24px; }
+    h2 {
+      font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;
+      color: var(--text-2); margin: 0 0 12px 0; font-weight: 500;
+    }
+
+    .step-row {
+      display: grid; grid-template-columns: 32px 1fr auto; gap: 12px;
+      padding: 8px 12px; background: var(--bg-elev); border-radius: 6px;
+      margin-bottom: 4px; font-size: 13px; align-items: center;
+    }
+    .step-row .step-key { font-family: ui-monospace, monospace; color: var(--text-2); font-size: 12px; }
+    .step-row .step-status {
+      padding: 2px 8px; border-radius: 999px; font-size: 11px;
+      background: var(--bg-elev-2); color: var(--text-2);
+    }
+    .step-row[data-status="running"] .step-status { background: var(--accent); color: #000; }
+    .step-row[data-status="done"]    .step-status { background: var(--ok);     color: #000; }
+    .step-row[data-status="failed"]  .step-status { background: var(--err);    color: #fff; }
+    .step-row[data-status="n/a"]     { opacity: 0.4; }
+
+    .activity {
+      max-height: 400px; overflow-y: auto;
+      background: var(--bg-elev); border: 1px solid var(--border);
+      border-radius: 8px; padding: 12px;
+    }
+    .activity-entry {
+      display: flex; gap: 12px; font-size: 12px; padding: 4px 0;
+      border-bottom: 1px solid var(--bg-elev-2); color: var(--text-2);
+    }
+    .activity-entry:last-child { border-bottom: 0; }
+    .activity-entry .ts { font-family: ui-monospace, monospace; flex-shrink: 0; }
+    .activity-entry .agent { color: var(--text); font-weight: 500; }
+    .activity-entry .type { color: var(--accent); font-family: ui-monospace, monospace; }
+
+    .quick-links { display: flex; gap: 12px; flex-wrap: wrap; }
+    .quick-links a {
+      padding: 8px 12px; background: var(--bg-elev); border: 1px solid var(--border);
+      border-radius: 6px; font-size: 12px;
+    }
+    .quick-links a:hover { border-color: var(--accent); text-decoration: none; }
+  </style>
+</head>
+<body>
+  <header class="issue-head">
+    <div class="breadcrumb">
+      <a id="back-to-wave" href="/">← back</a>
+    </div>
+    <h1 id="issue-title">issue</h1>
+    <div class="issue-meta">
+      <span><strong id="issue-id">—</strong></span>
+      <span>wave/<span id="issue-wave">—</span> · band/<span id="issue-band">—</span></span>
+      <span class="gh-state-pill" id="issue-gh-state" data-state="">—</span>
+      <span id="issue-cycles" hidden>cycles: <strong id="issue-cycle-count">0</strong></span>
+      <span id="issue-needs-human" hidden style="color: var(--err);">needs:human</span>
+    </div>
+  </header>
+  <main>
+    <section>
+      <h2>10-step pipeline</h2>
+      <div id="steps"></div>
+    </section>
+    <section>
+      <h2>Activity log</h2>
+      <div class="activity" id="activity"></div>
+    </section>
+    <section>
+      <h2>Quick links</h2>
+      <div class="quick-links" id="quick-links"></div>
+    </section>
+  </main>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>
