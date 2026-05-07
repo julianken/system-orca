@@ -99,10 +99,11 @@ function project_base(events) {
           goal: data.goal || '',
           started_at: e.ts,
           status: 'running',
-          archived: false,
-          artifact_root: data.artifact_root || null,
         };
         if (data.mode === 'wave') meta.mode = 'wave';
+        // archived and artifact_root are server-side fields persisted on
+        // disk via /archive + applyWorkflowInit; projection doesn't track
+        // them so the response merge can pull them from persistedMeta.
         break;
       }
 
@@ -202,18 +203,178 @@ function project_base(events) {
   };
 }
 
+const STEP_KEYS = [
+  '0_claim',
+  '1_reconcile',
+  '2_worktree',
+  '3_implement',
+  '4_gate',
+  '5_bot_review',
+  '6_verdict',
+  '7_mergify',
+  '8_verify_merge',
+  '9_cleanup',
+];
+
 function emptyWaveSummary() {
   return { total: 0, done: 0, in_progress: 0, blocked: 0, needs_human: 0 };
 }
 
+function emptyStepGrid(value) {
+  const grid = {};
+  for (const k of STEP_KEYS) grid[k] = value;
+  return grid;
+}
+
+function isTrackerBand(band, issueData) {
+  if (issueData && issueData.is_tracker === true) return true;
+  if (band && Number(band.concurrency) === 0) return true;
+  return false;
+}
+
+function upsertStatic(map, def, dynamicKeys) {
+  const id = def.id;
+  if (map.has(id)) {
+    const existing = map.get(id);
+    const merged = { ...existing };
+    for (const [k, v] of Object.entries(def)) {
+      if (!dynamicKeys.has(k)) merged[k] = v;
+    }
+    map.set(id, merged);
+    return merged;
+  }
+  const fresh = { ...def };
+  map.set(id, fresh);
+  return fresh;
+}
+
+const ISSUE_DYNAMIC = new Set([
+  'steps',
+  'review_cycles',
+  'state',
+  '_steps_pending_seed',
+]);
+
+const WAVE_DYNAMIC = new Set([]);
+const BAND_DYNAMIC = new Set([]);
+
+function pushWaveWarning(feed, e, message) {
+  feed.push({
+    ts: e.ts,
+    agent: e.agent,
+    type: 'note',
+    stage_id: null,
+    level: 'warn',
+    text: message,
+    data: { level: 'warn', text: message },
+  });
+}
+
 function project_wave(events) {
   const base = project_base(events);
+  const wavesMap = new Map();
+  const bandsMap = new Map();
+  const issuesMap = new Map();
+  const feed = base.feed.slice();
+
+  // Synthetic stages for issues — kept in a Map so issue_register can
+  // upsert without disturbing v1's stage_register-derived stages.
+  const stages = base.stages.slice();
+  const stagesById = new Map(stages.map((s, i) => [s.id, i]));
+  function syntheticStage(data) {
+    const id = data.issue_id;
+    const stage = {
+      id,
+      label: data.title || id,
+      parent_id: data.band_id,
+      type: 'issue',
+      status: 'pending',
+    };
+    if (stagesById.has(id)) {
+      stages[stagesById.get(id)] = { ...stages[stagesById.get(id)], ...stage };
+    } else {
+      stagesById.set(id, stages.length);
+      stages.push(stage);
+    }
+  }
+
+  function seedIssueGrid(issue, band) {
+    const value = isTrackerBand(band, issue) ? 'n/a' : 'pending';
+    issue.steps = emptyStepGrid(value);
+    delete issue._steps_pending_seed;
+  }
+
+  for (const e of events) {
+    switch (e.type) {
+      case 'wave_register': {
+        const data = e.data || {};
+        if (typeof data.wave_id !== 'string') {
+          pushWaveWarning(feed, e, 'wave_register missing wave_id; dropped');
+          break;
+        }
+        const def = { id: data.wave_id, ...data, bands: (wavesMap.get(data.wave_id)?.bands) || [] };
+        upsertStatic(wavesMap, def, WAVE_DYNAMIC);
+        break;
+      }
+
+      case 'band_register': {
+        const data = e.data || {};
+        if (typeof data.wave_id !== 'string' || typeof data.band_id !== 'string') {
+          pushWaveWarning(feed, e, 'band_register missing wave_id/band_id; dropped');
+          break;
+        }
+        const def = { id: data.band_id, ...data };
+        const band = upsertStatic(bandsMap, def, BAND_DYNAMIC);
+        const wave = wavesMap.get(data.wave_id);
+        if (wave) {
+          if (!Array.isArray(wave.bands)) wave.bands = [];
+          if (!wave.bands.includes(data.band_id)) wave.bands.push(data.band_id);
+        }
+        // Sweep deferred-seed issues that pointed at this band.
+        for (const issue of issuesMap.values()) {
+          if (issue.band_id === data.band_id && issue._steps_pending_seed) {
+            seedIssueGrid(issue, band);
+          }
+        }
+        break;
+      }
+
+      case 'issue_register': {
+        const data = e.data || {};
+        if (typeof data.issue_id !== 'string') {
+          pushWaveWarning(feed, e, 'issue_register missing issue_id; dropped');
+          break;
+        }
+        const def = { id: data.issue_id, ...data };
+        const issue = upsertStatic(issuesMap, def, ISSUE_DYNAMIC);
+        // Always synthesise (or refresh) a base stage so v1 mermaid sees the issue.
+        syntheticStage(data);
+        // Initial seeding of the 10-step grid (only on fresh register).
+        if (!issue.steps) {
+          const band = bandsMap.get(data.band_id);
+          if (!band) {
+            issue._steps_pending_seed = true;
+            pushWaveWarning(feed, e, `issue_register for ${data.issue_id} arrived before band_register ${data.band_id}; deferring step-grid seed`);
+          } else {
+            seedIssueGrid(issue, band);
+          }
+        }
+        break;
+      }
+
+      default:
+        break;
+    }
+  }
+
   return {
     ...base,
+    stages,
+    feed,
     meta: { ...base.meta, mode: 'wave' },
-    waves: [],
-    bands: [],
-    issues: [],
+    waves: Array.from(wavesMap.values()),
+    bands: Array.from(bandsMap.values()),
+    issues: Array.from(issuesMap.values()),
     escalations: [],
     critical_path: null,
     summary: emptyWaveSummary(),
@@ -258,4 +419,4 @@ function readEventsFromFile(filePath) {
   return events;
 }
 
-module.exports = { project, project_base, project_wave, detectMode, readEventsFromFile, deriveStatus };
+module.exports = { project, project_base, project_wave, detectMode, readEventsFromFile, deriveStatus, STEP_KEYS };

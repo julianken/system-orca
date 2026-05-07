@@ -31,6 +31,7 @@ const MIME = {
 };
 
 const EVENT_TYPES = new Set([
+  // v1 base
   'workflow_init',
   'plan_declared',
   'stage_register',
@@ -40,6 +41,13 @@ const EVENT_TYPES = new Set([
   'stage_fail',
   'workflow_complete',
   'note',
+  // v2-applicable in v1 base
+  'workflow_fail',
+  // v2 wave-mode (Phase 2 ingest; later phases add step_set, review_cycle,
+  // github_state_set, critical_path_update, escalation_add, escalation_clear)
+  'wave_register',
+  'band_register',
+  'issue_register',
 ]);
 
 const WORKFLOW_ID_RE = /^[a-z0-9_-]{1,64}$/;
@@ -261,8 +269,16 @@ async function handleGetWorkflow(req, res, id) {
   try { events = readEventsFromFile(eventsPath(id)); }
   catch (e) { return jsonError(res, 500, 'corrupt_events', e.message); }
   const projected = project(events);
-  const response = { ...projected, meta: { ...projected.meta, ...persistedMeta } };
-  return jsonResponse(res, 200, response);
+  // Projection is authoritative for derived fields (status, failure,
+  // summary, started_at). Persisted meta is authoritative for the
+  // server-side attributes it owns (archived, artifact_root, id).
+  const meta = {
+    ...persistedMeta,
+    ...projected.meta,
+    archived: !!persistedMeta.archived,
+    artifact_root: persistedMeta.artifact_root ?? null,
+  };
+  return jsonResponse(res, 200, { ...projected, meta });
 }
 
 async function handleGetDiagram(req, res, id, url) {
