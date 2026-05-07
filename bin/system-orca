@@ -206,8 +206,13 @@ async function gatherStatus() {
   if (!alive) return { up: false, pid: null, url: URL_BASE };
   const probe = await probeIdentity();
   if (!probe.ours) return { up: false, pid, url: URL_BASE, foreign: true };
-  const wf = await getJson('/api/workflows', 1000);
-  const counts = (wf && wf.json && wf.json.counts) || { running: 0, completed: 0, archived: 0 };
+  const wf = await getJson('/api/workflows?include_archived=true', 1000);
+  const all = (wf && Array.isArray(wf.json)) ? wf.json : [];
+  const counts = {
+    running:   all.filter((w) => !w.archived && w.status === 'running').length,
+    completed: all.filter((w) => !w.archived && w.status === 'completed').length,
+    archived:  all.filter((w) => w.archived).length,
+  };
   return { up: true, pid, url: URL_BASE, counts };
 }
 
