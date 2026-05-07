@@ -239,7 +239,7 @@ function initMermaid() {
     theme: 'dark',
     securityLevel: 'strict',
     themeVariables: { fontSize: '48px' },
-    flowchart: { padding: 24, nodeSpacing: 60, rankSpacing: 90 },
+    flowchart: { padding: 24, nodeSpacing: 60, rankSpacing: 90, useMaxWidth: false },
   });
   mermaidInitDone = true;
 }
